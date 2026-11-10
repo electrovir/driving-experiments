@@ -1,27 +1,12 @@
 import {clamp} from '@augment-vir/common';
+import {type CarControls, type CarPose} from '@evir/driving-common';
 
-/**
- * Each control's range: `throttle`, `brake`, and `handbrake` from 0 to 1, `steer` from -1 (left) to
- * 1 (right).
- */
-export type CarControls = {
-    throttle: number;
-    brake: number;
-    handbrake: number;
-    steer: number;
-};
-
-/** A car on the ground plane. Heading 0 faces +z and positive headings turn toward +x. */
-export type CarState = {
-    x: number;
-    z: number;
-    heading: number;
+/** A car on the ground plane. */
+export type CarState = CarPose & {
     /** Meters per second along the heading. Negative while reversing. */
     speed: number;
     /** Meters per second sideways while sliding. Positive slides toward the car's right. */
     lateralSpeed: number;
-    /** The front wheels' angle in radians. Positive turns right. */
-    steerAngle: number;
 };
 
 export const initialCarState: CarState = {

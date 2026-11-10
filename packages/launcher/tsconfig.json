@@ -15,10 +15,16 @@
     "extends": "../../configs/tsconfig.base.json",
     "references": [
         {
+            "path": "../arcade-physics"
+        },
+        {
             "path": "../core"
         },
         {
             "path": "../flat-plane"
+        },
+        {
+            "path": "../tires-and-gears"
         }
     ]
 }

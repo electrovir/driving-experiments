@@ -1,12 +1,18 @@
 import {AnthaEngine, AnthaUi} from '@antha/engine';
 import {createAnthaInputBindingsMod, createAnthaReadRawInputMod} from '@antha/input';
+import {
+    createPlayerOneBindings,
+    createSceneMod,
+    driveControlsHint,
+    driveGamepadInputs,
+    driveKeyboardKeys,
+    type DriveBinding,
+} from '@evir/driving-common';
 import {defineDrivingElement} from '@evir/driving-core';
 import {css, html} from 'element-vir';
 import {initialCarState} from './car.js';
-import {controlsHint, driveBindings, type DriveBinding} from './drive-binding.js';
 import {createDriveMod} from './drive.mod.js';
 import {type FlatPlaneState} from './flat-plane-state.js';
-import {createSceneMod} from './scene.mod.js';
 import {createSpeedometerMod} from './speedometer.mod.js';
 
 export const FlatPlaneGame = defineDrivingElement()({
@@ -43,7 +49,10 @@ export const FlatPlaneGame = defineDrivingElement()({
         return {
             engine: new AnthaEngine<FlatPlaneState>({
                 initState: {
-                    bindingAssignments: driveBindings,
+                    bindingAssignments: createPlayerOneBindings({
+                        gamepadInputs: driveGamepadInputs,
+                        keyboardKeys: driveKeyboardKeys,
+                    }),
                     car: initialCarState,
                 },
                 mods: [
@@ -61,7 +70,7 @@ export const FlatPlaneGame = defineDrivingElement()({
             <${AnthaUi.assign({
                 engine: state.engine,
             })}></${AnthaUi}>
-            <div class="controls">${controlsHint}</div>
+            <div class="controls">${driveControlsHint}</div>
         `;
     },
 });

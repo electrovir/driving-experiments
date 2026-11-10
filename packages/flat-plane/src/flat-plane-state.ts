@@ -1,7 +1,7 @@
 import {type AnthaModsState} from '@antha/engine';
 import {type createAnthaInputBindingsMod, type createAnthaReadRawInputMod} from '@antha/input';
-import {type CarControls, type CarState} from './car.js';
-import {type DriveBinding} from './drive-binding.js';
+import {type CarControls, type DriveBinding} from '@evir/driving-common';
+import {type CarState} from './car.js';
 
 export type FlatPlaneState = AnthaModsState<
     [

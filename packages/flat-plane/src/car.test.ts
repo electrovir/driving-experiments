@@ -1,7 +1,8 @@
 import {assert, assertWrap} from '@augment-vir/assert';
 import {createArray} from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
-import {initialCarState, stepCar, type CarControls, type CarState} from './car.js';
+import {type CarControls} from '@evir/driving-common';
+import {initialCarState, stepCar, type CarState} from './car.js';
 
 const noControls: CarControls = {
     brake: 0,

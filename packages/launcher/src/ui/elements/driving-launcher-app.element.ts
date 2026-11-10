@@ -67,7 +67,12 @@ export const DrivingLauncherApp = defineDrivingElement()({
 
         globalThis.document.title = 'Driving Experiments';
 
+        /**
+         * Newest start date first. Reversing before the stable sort puts the later entry of
+         * `allExperiments` first among experiments that started on the same day.
+         */
         const listItems = allExperiments
+            .toReversed()
             .toSorted(
                 (first, second) => toTimestamp(second.startDate) - toTimestamp(first.startDate),
             )
