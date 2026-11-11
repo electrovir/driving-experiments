@@ -9,7 +9,6 @@ import {
 import {createCameraOrbit, updateCameraOrbit} from '@evir/driving-common/src/camera-orbit.js';
 import {followCar, type ChaseCamera} from '@evir/driving-common/src/chase-camera.js';
 import {DriveBinding} from '@evir/driving-common/src/drive-binding.js';
-import {boundaryHalfWidth} from '@evir/driving-common/src/road-network.js';
 import {
     AmbientLight,
     Camera3D,
@@ -20,7 +19,7 @@ import {
 } from '@pixi/3d';
 import {convertDuration, type AnyDuration} from 'date-vir';
 import {Application} from 'pixi.js';
-import {isUnderGarageRoof} from './arena-layout.js';
+import {arenaHalfWidth, isUnderGarageRoof} from './arena-layout.js';
 import {wheelPositions} from './car-layout.js';
 import {createCarModel, type CarModel} from './car-model.js';
 import {applyDent, isRepair} from './dent.js';
@@ -39,10 +38,11 @@ import {
 } from './physics/vector.js';
 import {carPresets, type CarPreset} from './physics/vehicle-preset.js';
 import {getVehicleView} from './physics/vehicle-sim.js';
+import {createRouteMarkers, updateRouteMarkers} from './route-markers.js';
 import {type VehicleView} from './vehicle-view.js';
 
 const skyColor = 0x9c_c8_ec;
-const groundSize = 2 * boundaryHalfWidth + 10;
+const groundSize = 2 * arenaHalfWidth + 10;
 
 const cameraDistance = 9;
 const cameraHeight = 3.5;
@@ -90,7 +90,7 @@ async function createScene() {
         autoResize: true,
         camera: new Camera3D({
             far: 800,
-            fov: 60,
+            fov: baseFieldOfView,
             near: 0.3,
         }),
         environment: {
@@ -109,6 +109,7 @@ async function createScene() {
         intensity: 2.5,
     });
     const effects = createEffects();
+    const routeMarkers = createRouteMarkers();
 
     sun.rotation.set(-Math.PI / 3, Math.PI / 5, 0);
     view.root.addChild(
@@ -118,6 +119,7 @@ async function createScene() {
         }),
         createGarageWorld(),
         effects.root,
+        routeMarkers.root,
     );
     app.stage.addChild(view);
 
@@ -139,6 +141,7 @@ async function createScene() {
         effects,
         orbit: createCameraOrbit(canvasLayer),
         resizeObserver,
+        routeMarkers,
         view,
     };
 }
@@ -462,16 +465,51 @@ const cameraPlacers: Record<CameraView, (inputs: CameraInputs) => CameraPlacemen
     },
 };
 
+/** Vertical field of view in degrees while parked. It widens with speed. */
+const baseFieldOfView = 60;
+const speedFieldOfView = {
+    /** Meters per second where the view starts to widen, and where it stops. */
+    startSpeed: 10,
+    fullSpeed: 50,
+    /** Degrees added at `fullSpeed`. */
+    extraDegrees: 12,
+};
+const speedShake = {
+    /** Meters per second where the camera starts to shake, and where it shakes fully. */
+    startSpeed: 45,
+    fullSpeed: 80,
+    /** Meters the camera wanders at most, at `fullSpeed`. */
+    maxOffset: 0.012,
+};
+
+function getSpeedAmount(
+    speed: number,
+    {startSpeed, fullSpeed}: Readonly<{startSpeed: number; fullSpeed: number}>,
+) {
+    return Math.min(1, Math.max(0, (speed - startSpeed) / (fullSpeed - startSpeed)));
+}
+
 function updateCamera({
     scene,
+    timeSeconds,
     ...inputs
 }: CameraInputs &
     Readonly<{
         scene: Scene;
+        timeSeconds: number;
     }>) {
     const {position, target} = cameraPlacers[scene.cameraView](inputs);
+    const speed = Math.abs(inputs.vehicleView.forwardSpeed);
+    const shake = getSpeedAmount(speed, speedShake) * speedShake.maxOffset;
 
-    scene.view.camera.position.set(position.x, position.y, position.z);
+    scene.view.camera.fov =
+        baseFieldOfView + getSpeedAmount(speed, speedFieldOfView) * speedFieldOfView.extraDegrees;
+    /** Sines at unrelated rates, so the shake doesn't settle into a visible rhythm. */
+    scene.view.camera.position.set(
+        position.x + shake * Math.sin(timeSeconds * 37) * Math.sin(timeSeconds * 11.3),
+        position.y + shake * Math.sin(timeSeconds * 43.7) * Math.sin(timeSeconds * 7.9),
+        position.z + shake * Math.sin(timeSeconds * 31.1) * Math.sin(timeSeconds * 13.7),
+    );
     scene.view.camera.lookAt(target);
 }
 
@@ -613,6 +651,7 @@ function drawFrame({
         chase: carState.chase,
         orbit: scene.orbit,
         scene,
+        timeSeconds: performance.now() / 1000,
         vehicleView,
     });
 }
@@ -708,6 +747,13 @@ export function createGarageSceneMod() {
                     parkedVehicles: state.garage.parkedVehicles,
                     scene: runtime.scene,
                     vehicleView: state.vehicleView,
+                });
+            }
+
+            if (state.routeRun) {
+                updateRouteMarkers({
+                    markers: runtime.scene.routeMarkers,
+                    run: state.routeRun,
                 });
             }
 

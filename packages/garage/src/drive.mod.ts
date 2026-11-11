@@ -81,6 +81,9 @@ export function createDriveMod() {
                 (current, action) => action(current) ?? current,
                 state.vehicle,
             );
+            if (isPressed(GarageBinding.ToggleManualShifting)) {
+                state.isManualShifting = !state.isManualShifting;
+            }
             const controls = readCarControls(activeBindings);
             const rollLeft = activeBindings?.[GarageBinding.RollLeft]?.value ?? 0;
             const rollRight = activeBindings?.[GarageBinding.RollRight]?.value ?? 0;
@@ -90,7 +93,12 @@ export function createDriveMod() {
                 dtSeconds: getPhysicsStepSeconds(msSinceLastExecute),
                 inputs: {
                     ...controls,
+                    gearChange:
+                        (isPressed(GarageBinding.ShiftUp) ? 1 : 0) -
+                        (isPressed(GarageBinding.ShiftDown) ? 1 : 0),
+                    isManual: state.isManualShifting,
                     isBoostHeld: (activeBindings?.[GarageBinding.Boost]?.value ?? 0) > 0,
+                    clutchPedal: activeBindings?.[GarageBinding.Clutch]?.value ?? 0,
                     roll: Math.max(-1, Math.min(1, rollLeft - rollRight)),
                 },
                 vehicle,

@@ -26,12 +26,10 @@ const tachometerFaces = mapObjectValues(carPresets, (preset) => {
 function renderBar({
     color,
     fraction,
-    isGlowing,
     label,
 }: Readonly<{
     color: string;
     fraction: number;
-    isGlowing?: boolean | undefined;
     label: string;
 }>) {
     return html`
@@ -61,7 +59,6 @@ function renderBar({
                 <div
                     style=${css`
                         background: ${unsafeCSS(color)};
-                        box-shadow: ${unsafeCSS(isGlowing ? `0 0 10px 3px ${color}` : 'none')};
                         height: 100%;
                         width: ${getBarFraction(fraction) * 100}%;
                     `}
@@ -72,8 +69,16 @@ function renderBar({
 }
 
 function renderGauges(state: Readonly<Pick<GarageState, 'garage' | 'vehicleView'>>) {
-    const {boost, engine, health, preset} = state.vehicleView;
+    const {engine, health, preset} = state.vehicleView;
     const gauges = getPresetGauges(preset);
+    const gearReadout = svg`
+        <text y="38" fill="white" font-size="11" font-weight="bold" text-anchor="middle">
+            ${engine.gearLabel}
+        </text>
+        <text x="-16" y="38" fill="#bbbbbb" font-size="7" text-anchor="middle">
+            ${engine.shiftModeLabel}
+        </text>
+    `;
 
     return html`
         <div
@@ -88,16 +93,13 @@ function renderGauges(state: Readonly<Pick<GarageState, 'garage' | 'vehicleView'
             `}
         >
             ${renderDial({
-                extras: svg`
-                    <text y="38" fill="white" font-size="11" font-weight="bold" text-anchor="middle">
-                        ${engine.gearLabel}
-                    </text>
-                `,
+                extras: gauges.hasTachometer ? nothing : gearReadout,
                 face: speedometerFace,
                 value: toKph(state.vehicleView.forwardSpeed),
             })}
             ${gauges.hasTachometer
                 ? renderDial({
+                      extras: gearReadout,
                       face: tachometerFaces[preset],
                       value: engine.kiloRpm,
                   })
@@ -111,12 +113,6 @@ function renderGauges(state: Readonly<Pick<GarageState, 'garage' | 'vehicleView'
                     gap: 6px;
                 `}
             >
-                ${renderBar({
-                    color: '#ffb020',
-                    fraction: boost.amount,
-                    isGlowing: boost.isBoosting,
-                    label: 'Boost',
-                })}
                 ${gauges.hasHealth
                     ? renderBar({
                           color: '#30d050',
@@ -125,83 +121,6 @@ function renderGauges(state: Readonly<Pick<GarageState, 'garage' | 'vehicleView'
                       })
                     : nothing}
             </div>
-        </div>
-    `;
-}
-
-function renderStunts(state: Readonly<Pick<GarageState, 'garage' | 'vehicleView'>>) {
-    const {isCrashing, stunt} = state.vehicleView;
-
-    return html`
-        <div
-            style=${css`
-                align-items: center;
-                color: ${unsafeCSS(isCrashing ? '#ff4030' : 'white')};
-                display: flex;
-                flex-direction: column;
-                font-family: sans-serif;
-                gap: 8px;
-                left: 50%;
-                pointer-events: none;
-                position: absolute;
-                text-align: center;
-                text-shadow: 0 0 6px black;
-                top: 20%;
-                transform: translateX(-50%);
-            `}
-        >
-            ${isCrashing
-                ? html`
-                      <div
-                          style=${css`
-                              font-size: 32px;
-                              font-weight: bold;
-                          `}
-                      >
-                          Crashed
-                      </div>
-                  `
-                : nothing}
-            ${stunt.current
-                ? html`
-                      <div
-                          style=${css`
-                              font-size: 36px;
-                              font-weight: bold;
-                          `}
-                      >
-                          ${stunt.current}
-                      </div>
-                  `
-                : nothing}
-            ${stunt.lastCompleted
-                ? html`
-                      <div
-                          style=${css`
-                              animation: garage-hud-fade-in 1s ease-out;
-                              color: #ffd040;
-                              font-size: 22px;
-                          `}
-                      >
-                          ${stunt.lastCompleted}
-                      </div>
-                  `
-                : nothing}
-        </div>
-        <div
-            style=${css`
-                color: white;
-                font-family: sans-serif;
-                font-size: 20px;
-                font-weight: bold;
-                pointer-events: none;
-                position: absolute;
-                right: 16px;
-                text-shadow: 0 0 4px black;
-                top: 40px;
-            `}
-        >
-            Score ${stunt.totalScore.toFixed(1)}
         </div>
     `;
 }
@@ -279,7 +198,7 @@ const garageReminder: HtmlInterpolation = html`
 
 /**
  * Draws the garage menu while parked inside, otherwise a reminder of how to return, plus the
- * speedometer, tachometer, boost and health bars, and the stunt readout.
+ * speedometer, tachometer, and health bar.
  */
 export function createGarageHudMod() {
     return defineAnthaMod<GarageState>({
@@ -297,18 +216,8 @@ export function createGarageHudMod() {
             };
 
             return html`
-                <style>
-                    @keyframes garage-hud-fade-in {
-                        from {
-                            opacity: 0;
-                        }
-                        to {
-                            opacity: 1;
-                        }
-                    }
-                </style>
                 ${garage.isInGarage ? renderMenu(hudState) : garageReminder}
-                ${renderGauges(hudState)} ${renderStunts(hudState)}
+                ${renderGauges(hudState)}
             `;
         },
     });

@@ -1,4 +1,5 @@
 import {assert} from '@augment-vir/assert';
+import {type PartialWithUndefined} from '@augment-vir/common';
 import {describe, it} from '@augment-vir/test';
 import {WheelPosition} from '@evir/driving-common/src/car-pose.js';
 import {CarPreset} from './physics/vehicle-preset.js';
@@ -78,13 +79,26 @@ const quietSnapshot: SoundSnapshot = {
 };
 
 describe(getEngineTargets.name, () => {
-    function targets(pitch: number, health = 1, preset = CarPreset.Sedan) {
+    function targets({
+        pitch,
+        health = 1,
+        preset = CarPreset.Sedan,
+        throttle = 1,
+        timeSeconds = 0.01,
+    }: {
+        pitch: number;
+    } & PartialWithUndefined<{
+        health: number;
+        preset: CarPreset;
+        throttle: number;
+        timeSeconds: number;
+    }>) {
         return getEngineTargets({
-            timeSeconds: 0.01,
+            timeSeconds,
             view: asView<Parameters<typeof getEngineTargets>[0]['view']>({
                 engine: {
                     pitch,
-                    throttle: pitch,
+                    throttle,
                 },
                 health,
                 preset,
@@ -92,27 +106,96 @@ describe(getEngineTargets.name, () => {
         });
     }
 
-    it('follows RVP volume and spans the voice pitch range', () => {
-        const idle = targets(0);
-        const full = targets(1);
-        assert.strictEquals(idle.frequency, engineVoices[CarPreset.Sedan].minHz);
-        assert.strictEquals(full.frequency, engineVoices[CarPreset.Sedan].maxHz);
-        assert.isAbove(full.gain, idle.gain);
-        assert.isAbove(full.filterFrequency, idle.filterFrequency);
+    it('follows RVP volume at full throttle and spans the voice pitch range', () => {
+        const idle = targets({
+            pitch: 0,
+        });
+        const full = targets({
+            pitch: 1,
+        });
+        assert.deepEquals(
+            {
+                idle: idle.playbackRate,
+                full: full.playbackRate,
+                idleGain: idle.gain,
+                fullGain: full.gain,
+            },
+            {
+                idle: engineVoices[CarPreset.Sedan].minRate,
+                full: engineVoices[CarPreset.Sedan].maxRate,
+                idleGain: 0.3,
+                fullGain: 1,
+            },
+        );
+    });
+
+    it('is quieter and duller off the throttle', () => {
+        const onThrottle = targets({
+            pitch: 0.5,
+        });
+        const offThrottle = targets({
+            pitch: 0.5,
+            throttle: 0,
+        });
+        assert.isBelow(offThrottle.gain, onThrottle.gain);
+        assert.isBelow(offThrottle.filterFrequency, onThrottle.filterFrequency);
+    });
+
+    it('stutters on the rev limiter at redline but not below it', () => {
+        const cutTime = 0.07;
+        assert.isBelow(
+            targets({
+                pitch: 1,
+                timeSeconds: cutTime,
+            }).gain,
+            targets({
+                pitch: 1,
+            }).gain,
+        );
+        assert.strictEquals(
+            targets({
+                pitch: 0.9,
+                timeSeconds: cutTime,
+            }).gain,
+            targets({
+                pitch: 0.9,
+            }).gain,
+        );
     });
 
     it('is silent once the engine has no health', () => {
-        assert.isFalse(targets(0.5, 0).isAudible);
+        assert.isFalse(
+            targets({
+                pitch: 0.5,
+                health: 0,
+            }).isAudible,
+        );
     });
 
     it('wobbles pitch on damageable cars only', () => {
         assert.notStrictEquals(
-            targets(0.5, 0.5, CarPreset.Muscle).frequency,
-            targets(0.5, 1, CarPreset.Muscle).frequency,
+            targets({
+                pitch: 0.5,
+                health: 0.5,
+                preset: CarPreset.Muscle,
+            }).playbackRate,
+            targets({
+                pitch: 0.5,
+                health: 1,
+                preset: CarPreset.Muscle,
+            }).playbackRate,
         );
         assert.strictEquals(
-            targets(0.5, 0.5, CarPreset.Sedan).frequency,
-            targets(0.5, 1, CarPreset.Sedan).frequency,
+            targets({
+                pitch: 0.5,
+                health: 0.5,
+                preset: CarPreset.Sedan,
+            }).playbackRate,
+            targets({
+                pitch: 0.5,
+                health: 1,
+                preset: CarPreset.Sedan,
+            }).playbackRate,
         );
     });
 });

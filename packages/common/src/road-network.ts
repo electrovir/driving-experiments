@@ -29,7 +29,11 @@ export type RoadNetwork = {
     curbHeight: number;
 } & PartialWithUndefined<
     Record<(typeof roadObstacleListKeys)[RoadObstacleType], ReadonlyArray<Readonly<GroundPoint>>>
->;
+> &
+    PartialWithUndefined<{
+        /** Where the wall around the world stands. Defaults to {@link boundaryHalfWidth}. */
+        boundaryHalfWidth: number;
+    }>;
 
 /** Something raised spanning a road from curb to curb. */
 export type RoadObstacle = {
@@ -344,16 +348,17 @@ function getRoadSegments(roads: ReadonlyArray<Readonly<TrackLayout>>) {
 
 /** The faces of the wall around the world that a wheel reaches into. */
 function getBoundaryWalls({
+    halfWidth,
     point,
     radius,
-}: Readonly<{point: Readonly<GroundPoint>; radius: number}>) {
+}: Readonly<{halfWidth: number; point: Readonly<GroundPoint>; radius: number}>) {
     return (
         [
             'x',
             'z',
         ] as const
     ).map((axis): WheelContact['wall'] => {
-        const depth = Math.abs(point[axis]) + radius - boundaryHalfWidth;
+        const depth = Math.abs(point[axis]) + radius - halfWidth;
 
         return depth > 0
             ? {
@@ -598,7 +603,10 @@ export function createRoadSurface(network: Readonly<RoadNetwork>) {
         const obstacleContact = getObstacleContact(params);
         const wall = [
             obstacleContact.wall,
-            ...getBoundaryWalls(params),
+            ...getBoundaryWalls({
+                ...params,
+                halfWidth: network.boundaryHalfWidth ?? boundaryHalfWidth,
+            }),
         ].reduce<WheelContact['wall']>(
             (deepest, next) => (next && next.depth > (deepest?.depth ?? 0) ? next : deepest),
             undefined,

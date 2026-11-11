@@ -1,5 +1,6 @@
 import {type PartialWithUndefined} from '@augment-vir/common';
 import {WheelPosition} from '@evir/driving-common/src/car-pose.js';
+import {type AnyDuration} from 'date-vir';
 import {curveKey, type AnimationCurve} from './animation-curve.js';
 import {type Vector3} from './vector.js';
 
@@ -40,9 +41,6 @@ export type BodyBox = {
 
 export type GearTuning = {
     ratio: number;
-    /** Engine RPM range this gear is meant for, which the automatic shifting reads. */
-    minRpm: number;
-    maxRpm: number;
 };
 
 export type TransmissionTuning =
@@ -50,9 +48,8 @@ export type TransmissionTuning =
           kind: TransmissionKind.Gearbox;
           /** In order: reverse, neutral, then each forward gear. */
           gears: ReadonlyArray<Readonly<GearTuning>>;
-          /** Physics steps a shift takes. */
-          shiftDelay: number;
-          shiftThreshold: number;
+          /** How long the wheels go without drive while the gearbox changes gear. */
+          shiftDuration: AnyDuration;
           startGear: number;
           driveDividePower: number;
       }
@@ -89,6 +86,11 @@ export type WheelTuning = {
     extendSpeed: number;
     hardContactForce: number;
     forwardFriction: number;
+    /**
+     * How hard the engine has to drive the wheel before its tire breaks loose and spins, as the
+     * slip the engine alone would give it. Infinite never spins under power.
+     */
+    breakLooseSlip: number;
     sidewaysFriction: number;
     sidewaysFrictionCurve: AnimationCurve;
     tireRadius: number;
@@ -161,7 +163,6 @@ export type CarPresetTuning = {
     assist: AssistTuning;
     flip: FlipTuning;
     boostPowerCurve: AnimationCurve;
-    boostBurnRate: number;
     /**
      * Straight forward push while boosting, on top of the extra engine power. Randomation's boost
      * only adds engine power, which a car with a gearbox barely feels.
@@ -359,6 +360,7 @@ function createWheels({
 const carWheelShared: Omit<WheelTuning, 'pivot'> = {
     ackermannFactor: 0.1,
     brakeForce: 0.5,
+    breakLooseSlip: Infinity,
     detachForce: Infinity,
     ebrakeForce: 0,
     extendSpeed: 20,
@@ -401,41 +403,17 @@ const carRearPivot: Vector3 = {
     z: carRearZ,
 };
 
-function createGears(
-    forwardGears: ReadonlyArray<
-        readonly [
-            ratio: number,
-            minRpm: number,
-            maxRpm: number,
-        ]
-    >,
-    reverseMinRpm: number,
-): GearTuning[] {
+/** Reverse, neutral, then the forward gears with these ratios. */
+function createGears(forwardRatios: ReadonlyArray<number>): GearTuning[] {
     return [
-        {
-            maxRpm: 0,
-            minRpm: reverseMinRpm,
-            ratio: -3.5,
-        },
-        {
-            maxRpm: 0,
-            minRpm: 0,
-            ratio: 0,
-        },
-        ...forwardGears.map(
-            ([
-                ratio,
-                minRpm,
-                maxRpm,
-            ]) => {
-                return {
-                    maxRpm,
-                    minRpm,
-                    ratio,
-                };
-            },
-        ),
-    ];
+        -3.5,
+        0,
+        ...forwardRatios,
+    ].map((ratio) => {
+        return {
+            ratio,
+        };
+    });
 }
 
 const sedanVehicle: WheeledTuning = {
@@ -452,44 +430,18 @@ const sedanVehicle: WheeledTuning = {
     steerRate: 0.1,
     transmission: {
         driveDividePower: 3,
-        gears: createGears(
-            [
-                [
-                    3,
-                    0,
-                    1474.62,
-                ],
-                [
-                    2,
-                    1105.97,
-                    2211.94,
-                ],
-                [
-                    1.6,
-                    1935.44,
-                    2764.92,
-                ],
-                [
-                    1.2,
-                    2304.1,
-                    3686.56,
-                ],
-                [
-                    0.9,
-                    3072.13,
-                    4915.41,
-                ],
-                [
-                    0.7,
-                    4213.21,
-                    6319.81,
-                ],
-            ],
-            -1263.96,
-        ),
+        gears: createGears([
+            3,
+            2,
+            1.6,
+            1.2,
+            0.9,
+            0.7,
+        ]),
         kind: TransmissionKind.Gearbox,
-        shiftDelay: 20,
-        shiftThreshold: 2,
+        shiftDuration: {
+            milliseconds: 170,
+        },
         startGear: 2,
     },
     wheels: createWheels({
@@ -507,7 +459,6 @@ const sedanVehicle: WheeledTuning = {
 const sedanTuning: CarPresetTuning = {
     assist: defaultAssist,
     bodyBoxes: carBodyBoxes,
-    boostBurnRate: 0.01,
     boostThrust: 10,
     boostPowerCurve: defaultBoostCurve,
     centerOfMassOffset: {
@@ -572,44 +523,18 @@ export const carPresets: Readonly<Record<CarPreset, Readonly<CarPresetTuning>>> 
             },
             transmission: {
                 driveDividePower: 3,
-                gears: createGears(
-                    [
-                        [
-                            4,
-                            0,
-                            1005.43,
-                        ],
-                        [
-                            3,
-                            837.85,
-                            1340.57,
-                        ],
-                        [
-                            2,
-                            1005.43,
-                            2010.85,
-                        ],
-                        [
-                            1.5,
-                            1675.71,
-                            2681.13,
-                        ],
-                        [
-                            1,
-                            2010.85,
-                            4021.7,
-                        ],
-                        [
-                            0.7,
-                            3159.91,
-                            5745.29,
-                        ],
-                    ],
-                    -1149.06,
-                ),
+                gears: createGears([
+                    4,
+                    3,
+                    2,
+                    1.5,
+                    1,
+                    0.7,
+                ]),
                 kind: TransmissionKind.Gearbox,
-                shiftDelay: 20,
-                shiftThreshold: 2,
+                shiftDuration: {
+                    milliseconds: 170,
+                },
                 startGear: 2,
             },
             wheels: createWheels({
@@ -694,44 +619,18 @@ export const carPresets: Readonly<Record<CarPreset, Readonly<CarPresetTuning>>> 
             },
             transmission: {
                 driveDividePower: 3,
-                gears: createGears(
-                    [
-                        [
-                            3,
-                            0,
-                            1646.95,
-                        ],
-                        [
-                            2,
-                            1235.21,
-                            2470.42,
-                        ],
-                        [
-                            1.5,
-                            2058.68,
-                            3293.89,
-                        ],
-                        [
-                            1.1,
-                            2695,
-                            4491.67,
-                        ],
-                        [
-                            0.9,
-                            3992.59,
-                            5489.82,
-                        ],
-                        [
-                            0.7,
-                            4705.56,
-                            7058.34,
-                        ],
-                    ],
-                    -1411.67,
-                ),
+                gears: createGears([
+                    3,
+                    2,
+                    1.5,
+                    1.1,
+                    0.9,
+                    0.7,
+                ]),
                 kind: TransmissionKind.Gearbox,
-                shiftDelay: 20,
-                shiftThreshold: 2,
+                shiftDuration: {
+                    milliseconds: 170,
+                },
                 startGear: 2,
             },
             wheels: createWheels({
@@ -740,6 +639,7 @@ export const carPresets: Readonly<Record<CarPreset, Readonly<CarPresetTuning>>> 
                 },
                 rear: {
                     ...carRearWheel,
+                    breakLooseSlip: 2,
                     pivot: muscleRearPivot,
                     sidewaysFriction: 4.5,
                 },
@@ -757,7 +657,7 @@ export const carPresets: Readonly<Record<CarPreset, Readonly<CarPresetTuning>>> 
     [CarPreset.Stunt]: {
         ...sedanTuning,
         description:
-            'All-wheel drive and four-wheel steering. In the air, steer, throttle, and Q / E spin and flip it for points and boost.',
+            'All-wheel drive and four-wheel steering. In the air, steer, throttle, and Q / E spin and flip it.',
         flip: {
             ...defaultFlip,
             flipPower: {
@@ -964,39 +864,17 @@ export const carPresets: Readonly<Record<CarPreset, Readonly<CarPresetTuning>>> 
             steerRate: 0.05,
             transmission: {
                 driveDividePower: 2,
-                gears: createGears(
-                    [
-                        [
-                            3,
-                            0,
-                            1285.35,
-                        ],
-                        [
-                            2.2,
-                            1051.65,
-                            1752.75,
-                        ],
-                        [
-                            1.8,
-                            1558,
-                            2142.25,
-                        ],
-                        [
-                            1.5,
-                            1928.03,
-                            2570.7,
-                        ],
-                        [
-                            1.2,
-                            2249.37,
-                            3213.38,
-                        ],
-                    ],
-                    -1101.73,
-                ),
+                gears: createGears([
+                    3,
+                    2.2,
+                    1.8,
+                    1.5,
+                    1.2,
+                ]),
                 kind: TransmissionKind.Gearbox,
-                shiftDelay: 30,
-                shiftThreshold: 1,
+                shiftDuration: {
+                    milliseconds: 250,
+                },
                 startGear: 2,
             },
             wheels: createWheels({
@@ -1025,7 +903,8 @@ export const carPresets: Readonly<Record<CarPreset, Readonly<CarPresetTuning>>> 
                     rimRadius: 0.19,
                     sidewaysFriction: 6,
                     springDamping: 0.2,
-                    springExponent: 3,
+                    springExponent: 1.5,
+                    springForce: 7,
                     steerRange: 50,
                     suspensionDistance: 0.7,
                     tireRadius: 0.51,

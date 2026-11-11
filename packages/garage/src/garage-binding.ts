@@ -4,18 +4,26 @@ import {type GamepadInputs, type KeyboardKeys} from '@evir/driving-common/src/dr
 
 export enum GarageBinding {
     Boost = 'boost',
+    /** Only does anything while shifting manually. */
+    Clutch = 'clutch',
     CycleCamera = 'cycle-camera',
     /** In the air, rolls the car. Pitch and yaw come from the throttle, brake, and steering. */
     RollLeft = 'roll-left',
     RollRight = 'roll-right',
     Recover = 'recover',
     ReturnToGarage = 'return-to-garage',
+    ShiftDown = 'shift-down',
+    ShiftUp = 'shift-up',
     ToggleHeadlights = 'toggle-headlights',
+    ToggleManualShifting = 'toggle-manual-shifting',
 }
 
 export const garageKeyboardKeys: KeyboardKeys<GarageBinding> = {
     [GarageBinding.Boost]: [
         'KeyF',
+    ],
+    [GarageBinding.Clutch]: [
+        'KeyV',
     ],
     [GarageBinding.CycleCamera]: [
         'KeyC',
@@ -32,8 +40,17 @@ export const garageKeyboardKeys: KeyboardKeys<GarageBinding> = {
     [GarageBinding.ReturnToGarage]: [
         'KeyG',
     ],
+    [GarageBinding.ShiftDown]: [
+        'KeyZ',
+    ],
+    [GarageBinding.ShiftUp]: [
+        'KeyX',
+    ],
     [GarageBinding.ToggleHeadlights]: [
         'KeyH',
+    ],
+    [GarageBinding.ToggleManualShifting]: [
+        'KeyT',
     ],
 };
 
@@ -42,6 +59,12 @@ export const garageGamepadInputs: GamepadInputs<GarageBinding> = {
         {
             direction: InputDirection.Positive,
             inputName: KnownInput.FaceAlt1,
+        },
+    ],
+    [GarageBinding.Clutch]: [
+        {
+            direction: InputDirection.Positive,
+            inputName: KnownInput.FaceCancel,
         },
     ],
     [GarageBinding.CycleCamera]: [
@@ -74,10 +97,28 @@ export const garageGamepadInputs: GamepadInputs<GarageBinding> = {
             inputName: KnownInput.Start,
         },
     ],
+    [GarageBinding.ShiftDown]: [
+        {
+            direction: InputDirection.Positive,
+            inputName: KnownInput.DPadLeft,
+        },
+    ],
+    [GarageBinding.ShiftUp]: [
+        {
+            direction: InputDirection.Positive,
+            inputName: KnownInput.DPadRight,
+        },
+    ],
     [GarageBinding.ToggleHeadlights]: [
         {
             direction: InputDirection.Positive,
             inputName: KnownInput.DPadUp,
+        },
+    ],
+    [GarageBinding.ToggleManualShifting]: [
+        {
+            direction: InputDirection.Positive,
+            inputName: KnownInput.DPadDown,
         },
     ],
 };
@@ -119,6 +160,21 @@ export const garageControls: ReadonlyArray<
         action: 'Camera',
         gamepad: 'Y',
         keyboard: 'C',
+    },
+    {
+        action: 'Manual / automatic',
+        gamepad: 'D-pad down',
+        keyboard: 'T',
+    },
+    {
+        action: 'Shift down / up (manual)',
+        gamepad: 'D-pad left / right',
+        keyboard: 'Z / X',
+    },
+    {
+        action: 'Clutch (manual)',
+        gamepad: 'B',
+        keyboard: 'V',
     },
     {
         action: 'Headlights',

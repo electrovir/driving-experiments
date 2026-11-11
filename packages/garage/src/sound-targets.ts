@@ -15,198 +15,80 @@ function lerp({from, to, amount}: Readonly<{from: number; to: number; amount: nu
     return from + (to - from) * amount;
 }
 
-export type EngineOscillatorVoice = {
-    type: OscillatorType;
-    /** Multiple of the engine's fundamental frequency. */
-    ratio: number;
-    gain: number;
-};
+/** RVP's engine recordings: one every wheeled car shares, and the hover car's turbine. */
+export enum EngineRecording {
+    Gas = 'gas',
+    Hover = 'hover',
+}
 
 export type EngineVoice = {
-    oscillators: ReadonlyArray<Readonly<EngineOscillatorVoice>>;
-    /**
-     * Fundamental frequency in Hz at `engine.pitch` 0 and 1, the counterpart of RVP's min and max
-     * pitch.
-     */
-    minHz: number;
-    maxHz: number;
-    /** The lowpass cutoff as a multiple of the fundamental, coasting and at full throttle. */
-    filterRatioIdle: number;
-    filterRatioFull: number;
-    filterQ: number;
-    /** How deeply the engine's loudness pulses, from 0 (steady) to 0.5. */
-    lopeDepth: number;
-    lopeHz: number;
-    gainScale: number;
+    recording: EngineRecording;
+    /** Playback rate of the recording at `engine.pitch` 0 and 1, RVP's `minPitch` and `maxPitch`. */
+    minRate: number;
+    maxRate: number;
 };
 
+/**
+ * RVP plays every wheeled car at 0.5 to 1.5. Bigger engines here play lower and smaller ones
+ * higher, so the cars don't all sound alike.
+ */
 export const engineVoices: Readonly<Record<CarPreset, Readonly<EngineVoice>>> = {
     [CarPreset.Sedan]: {
-        filterQ: 0.7,
-        filterRatioFull: 8,
-        filterRatioIdle: 3,
-        gainScale: 1,
-        lopeDepth: 0,
-        lopeHz: 0,
-        maxHz: 150,
-        minHz: 38,
-        oscillators: [
-            {
-                gain: 1,
-                ratio: 1,
-                type: 'sawtooth',
-            },
-            {
-                gain: 0.5,
-                ratio: 0.5,
-                type: 'square',
-            },
-        ],
+        maxRate: 1.5,
+        minRate: 0.5,
+        recording: EngineRecording.Gas,
     },
     [CarPreset.Muscle]: {
-        filterQ: 1.2,
-        filterRatioFull: 6,
-        filterRatioIdle: 2.5,
-        gainScale: 1.15,
-        lopeDepth: 0.3,
-        lopeHz: 7,
-        maxHz: 100,
-        minHz: 26,
-        oscillators: [
-            {
-                gain: 1,
-                ratio: 1,
-                type: 'sawtooth',
-            },
-            {
-                gain: 0.8,
-                ratio: 0.5,
-                type: 'square',
-            },
-            {
-                gain: 0.4,
-                ratio: 1.02,
-                type: 'square',
-            },
-        ],
+        maxRate: 1.25,
+        minRate: 0.4,
+        recording: EngineRecording.Gas,
     },
     [CarPreset.Drift]: {
-        filterQ: 4,
-        filterRatioFull: 14,
-        filterRatioIdle: 5,
-        gainScale: 0.95,
-        lopeDepth: 0.08,
-        lopeHz: 19,
-        maxHz: 230,
-        minHz: 48,
-        oscillators: [
-            {
-                gain: 1,
-                ratio: 1,
-                type: 'sawtooth',
-            },
-            {
-                gain: 0.6,
-                ratio: 1.01,
-                type: 'sawtooth',
-            },
-            {
-                gain: 0.3,
-                ratio: 2,
-                type: 'square',
-            },
-        ],
+        maxRate: 1.7,
+        minRate: 0.55,
+        recording: EngineRecording.Gas,
     },
     [CarPreset.Stunt]: {
-        filterQ: 2,
-        filterRatioFull: 12,
-        filterRatioIdle: 4,
-        gainScale: 0.9,
-        lopeDepth: 0,
-        lopeHz: 0,
-        maxHz: 300,
-        minHz: 62,
-        oscillators: [
-            {
-                gain: 1,
-                ratio: 1,
-                type: 'sawtooth',
-            },
-            {
-                gain: 0.4,
-                ratio: 2,
-                type: 'triangle',
-            },
-        ],
+        maxRate: 1.8,
+        minRate: 0.6,
+        recording: EngineRecording.Gas,
     },
     [CarPreset.MonsterTruck]: {
-        filterQ: 1.5,
-        filterRatioFull: 5,
-        filterRatioIdle: 2,
-        gainScale: 1.25,
-        lopeDepth: 0.18,
-        lopeHz: 4,
-        maxHz: 72,
-        minHz: 20,
-        oscillators: [
-            {
-                gain: 1,
-                ratio: 1,
-                type: 'sawtooth',
-            },
-            {
-                gain: 1,
-                ratio: 0.5,
-                type: 'square',
-            },
-            {
-                gain: 0.5,
-                ratio: 0.25,
-                type: 'sine',
-            },
-        ],
+        maxRate: 1.05,
+        minRate: 0.35,
+        recording: EngineRecording.Gas,
     },
     [CarPreset.Hover]: {
-        filterQ: 1,
-        filterRatioFull: 6,
-        filterRatioIdle: 3,
-        gainScale: 0.8,
-        lopeDepth: 0,
-        lopeHz: 0,
-        maxHz: 560,
-        minHz: 140,
-        oscillators: [
-            {
-                gain: 1,
-                ratio: 1,
-                type: 'sine',
-            },
-            {
-                gain: 0.45,
-                ratio: 2.01,
-                type: 'sine',
-            },
-            {
-                gain: 0.25,
-                ratio: 3.02,
-                type: 'triangle',
-            },
-        ],
+        maxRate: 1.5,
+        minRate: 0.5,
+        recording: EngineRecording.Hover,
     },
 };
 
 export type EngineTargets = {
     /** An engine with no health left is silent. */
     isAudible: boolean;
-    /** Fundamental frequency in Hz. */
-    frequency: number;
-    filterFrequency: number;
+    playbackRate: number;
     gain: number;
+    /** Cutoff of the lowpass the engine plays through. */
+    filterFrequency: number;
+};
+
+/** Engine pitch past which a gas engine is on its rev limiter. */
+const limiterPitch = 0.99;
+/** How many times a second the rev limiter cuts the engine. */
+const limiterHz = 11;
+/** Lowpass cutoff with the throttle closed and fully open. */
+const engineFilterHz = {
+    closed: 1400,
+    open: 16_000,
 };
 
 /**
- * RVP's engine sound: pitch from min to max by `engine.pitch`, volume `0.3 + 0.7 × pitch`. Damaged
- * cars that can be damaged also wobble in pitch, faster and wider as health drops.
+ * Same as RVP's engine sound: playback rate from min to max by `engine.pitch`, volume `0.3 + 0.7 ×
+ * pitch`. Cars that can be damaged also wobble in pitch, faster and wider as health drops. Unlike
+ * RVP, lifting off the throttle makes the engine quieter and duller, and a gas engine held at its
+ * redline stutters on the rev limiter.
  */
 export function getEngineTargets({
     view,
@@ -217,27 +99,36 @@ export function getEngineTargets({
 }>): EngineTargets {
     const voice = engineVoices[view.preset];
     const damage = 1 - view.health;
+    const pitch = clamp01(view.engine.pitch);
+    const throttle = clamp01(view.engine.throttle);
     const wobble = carPresets[view.preset].hasDamage
-        ? 1 + Math.sin(timeSeconds * 200 * damage) * damage * 0.1
-        : 1;
-    const frequency =
-        lerp({
-            amount: clamp01(view.engine.pitch),
-            from: voice.minHz,
-            to: voice.maxHz,
-        }) * wobble;
+        ? Math.sin(timeSeconds * 200 * damage) * damage * 0.1
+        : 0;
+    const isCutByLimiter =
+        voice.recording === EngineRecording.Gas &&
+        pitch >= limiterPitch &&
+        Math.sin(timeSeconds * 2 * Math.PI * limiterHz) < 0;
 
     return {
         filterFrequency:
-            frequency *
+            engineFilterHz.closed * (engineFilterHz.open / engineFilterHz.closed) ** throttle,
+        gain:
+            (0.3 + 0.7 * pitch) *
             lerp({
-                amount: clamp01(view.engine.throttle),
-                from: voice.filterRatioIdle,
-                to: voice.filterRatioFull,
-            }),
-        frequency,
-        gain: (0.3 + 0.7 * clamp01(view.engine.pitch)) * voice.gainScale,
+                amount: throttle,
+                from: 0.6,
+                to: 1,
+            }) *
+            (isCutByLimiter ? 0.4 : 1),
         isAudible: view.health > 0,
+        playbackRate:
+            lerp({
+                amount: pitch,
+                from: voice.minRate,
+                to: voice.maxRate,
+            }) *
+                (isCutByLimiter ? 0.96 : 1) +
+            wobble,
     };
 }
 

@@ -21,6 +21,9 @@ import {type GarageState} from './garage-state.js';
 import {createGarageHudMod} from './hud.mod.js';
 import {CarPreset} from './physics/vehicle-preset.js';
 import {createVehicleSimulation, getVehicleView} from './physics/vehicle-sim.js';
+import {RouteRunPhase} from './route-run.js';
+import {createRouteMod} from './route.mod.js';
+import {createGarageRumbleMod} from './rumble.mod.js';
 import {createGarageSceneMod} from './scene.mod.js';
 import {createGarageSoundMod} from './sound.mod.js';
 
@@ -90,6 +93,10 @@ export const GarageGame = defineDrivingElement()({
                         isInGarage: true,
                         parkedVehicles: createParkedVehicles(),
                     },
+                    isManualShifting: false,
+                    routeRun: {
+                        phase: RouteRunPhase.Waiting,
+                    },
                     vehicle,
                     vehicleView: getVehicleView(vehicle),
                 },
@@ -97,9 +104,11 @@ export const GarageGame = defineDrivingElement()({
                     createAnthaReadRawInputMod(),
                     createAnthaInputBindingsMod<DriveBinding | GarageBinding>(),
                     createDriveMod(),
+                    createRouteMod(),
                     createGarageSceneMod(),
                     createGarageHudMod(),
                     createGarageSoundMod(),
+                    createGarageRumbleMod(),
                 ],
             }),
         };

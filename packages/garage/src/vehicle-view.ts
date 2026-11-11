@@ -30,7 +30,6 @@ export type VehicleView = {
     groundedWheelCount: number;
     /** Impacts since the last frame, for sparks, crash sounds, and dents. */
     impacts: ReadonlyArray<Readonly<VehicleImpact>>;
-    stunt: StuntView;
 };
 
 export type WheelView = {
@@ -69,14 +68,14 @@ export type EngineView = {
     /** Gear name for the HUD: "R", "N", "1"... or "CVT" / "Hover". */
     gearLabel: string;
     isShifting: boolean;
+    /** "A" (automatic) or "M" (manual) for a car with a gearbox, empty otherwise. */
+    shiftModeLabel: string;
     /** Engine RPM, in thousands. */
     kiloRpm: number;
 };
 
 export type BoostView = {
     isBoosting: boolean;
-    /** Fuel left, from 0 to 1. */
-    amount: number;
 };
 
 export type LightsView = {
@@ -104,12 +103,4 @@ export type VehicleImpact = {
     dentPoint: Vector3;
     dentTranslation: Vector3;
     dentStrength: number;
-};
-
-export type StuntView = {
-    /** What the car is doing right now, such as "Drift: 12 m + Back Flip x2". Empty when nothing. */
-    current: string;
-    /** The last finished stunt combo, and the score it earned. */
-    lastCompleted: string;
-    totalScore: number;
 };

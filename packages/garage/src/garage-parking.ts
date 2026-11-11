@@ -17,8 +17,10 @@ import {
 } from './physics/vehicle-sim.js';
 import {type VehicleWorld} from './physics/vehicle-world.js';
 
+export const arenaRoadSurface = createRoadSurface(arenaLayout);
+
 export const arenaWorld: VehicleWorld = {
-    getWheelContact: createRoadSurface(arenaLayout).getWheelContact,
+    getWheelContact: arenaRoadSurface.getWheelContact,
     walls: garageWalls,
 };
 

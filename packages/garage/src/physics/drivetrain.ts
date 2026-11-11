@@ -1,3 +1,4 @@
+import {convertDuration} from 'date-vir';
 import {evaluateCurve, getCurveEndTime} from './animation-curve.js';
 import {clamp01, lerpNumber} from './vector.js';
 import {
@@ -32,23 +33,60 @@ export type DriveForce = {
 export type MotorState = DriveForce & {
     /** The throttle the engine is actually given, which a burnout or reversing changes. */
     throttle: number;
-    /** From 0 to 1. */
-    pitch: number;
-    airPitch: number;
 };
 
 export type TransmissionState = {
     gearIndex: number;
-    /** Physics steps left in the current shift. */
-    shiftTime: number;
+    /** Seconds left in the current shift. */
+    shiftSeconds: number;
     /** The ratio driving the wheels right now: the gear's ratio, or the CVT's. */
     ratio: number;
+    /**
+     * From 0 with the clutch pedal down to 1 fully engaged. It opens for each shift and closes
+     * again after, so the engine's speed and drive blend into the new gear instead of jumping.
+     */
+    clutch: number;
 };
+
+/** How the gearbox picks its gear. A CVT always shifts itself. */
+export type ShiftRequest = {
+    isManual: boolean;
+    /** 1 to shift up a gear this step, -1 to shift down, 0 to hold. Only read while manual. */
+    gearChange: number;
+    /** From 0 released to 1 fully pressed. Only read while manual. */
+    clutchPedal: number;
+};
+
+/** Engine speed at rest, as a fraction of the redline. */
+const idleFraction = 0.1;
+/**
+ * How high a slipping clutch lets the engine rev at full throttle while the wheels are too slow to
+ * hold it, as a fraction of the redline.
+ */
+const launchFraction = 0.4;
+/** Time constant of a free-revving engine chasing its throttle. */
+const freeRevSeconds = 0.15;
+/** How long the clutch takes to close after a shift or after the pedal comes up. */
+const clutchEngageSeconds = 0.25;
+/**
+ * The automatic's upshift point, as a fraction of the redline, with the throttle released and
+ * floored. It shifts down once the lower gear would land the engine below the upshift point.
+ */
+const upshiftFractions = {
+    released: 0.35,
+    floored: 0.8,
+};
+/** How far below the upshift point the lower gear must land the engine before a downshift. */
+const downshiftMargin = 0.8;
+/**
+ * Extra drive, per redline of engine speed above the wheels' speed, while the clutch closes. A
+ * spinning engine dumps its speed into the wheels, which is what makes a clutch kick break the rear
+ * tires loose.
+ */
+const clutchKickGain = 2;
 
 export function createMotorState(): MotorState {
     return {
-        airPitch: 1,
-        pitch: 0,
         rpm: 0,
         throttle: 0,
         torque: 0,
@@ -59,23 +97,26 @@ export function createTransmissionState(tuning: Readonly<TransmissionTuning>): T
     return tuning.kind === TransmissionKind.Gearbox
         ? {
               gearIndex: tuning.startGear,
+              clutch: 1,
               ratio: tuning.gears[tuning.startGear]?.ratio ?? 1,
-              shiftTime: 0,
+              shiftSeconds: 0,
           }
         : {
+              clutch: 1,
               gearIndex: 0,
               ratio: tuning.minRatio,
-              shiftTime: 0,
+              shiftSeconds: 0,
           };
 }
 
-/** Same as Randomation Vehicle Physics' `GasMotor.FixedUpdate`. */
+/**
+ * Same as Randomation Vehicle Physics' `GasMotor.FixedUpdate`, without its sound pitch: the
+ * engine's own speed comes from {@link stepEngineRpm}.
+ */
 export function stepGasMotor({
     feedbackRpm,
     motor,
     situation,
-    transmission,
-    transmissionTuning,
     tuning,
 }: Readonly<{
     motor: Readonly<MotorState>;
@@ -83,8 +124,6 @@ export function stepGasMotor({
     situation: Readonly<DriveSituation>;
     /** Engine-side RPM coming back from the wheels. */
     feedbackRpm: number;
-    transmission: Readonly<TransmissionState>;
-    transmissionTuning: Readonly<TransmissionTuning>;
 }>): MotorState {
     const throttle = lerpNumber({
         from: situation.isReversing && situation.accel <= 0 ? situation.brake : situation.accel,
@@ -113,33 +152,85 @@ export function stepGasMotor({
               }) *
               boostMultiplier *
               situation.health;
-    const isShifting = transmission.shiftTime > 0;
-    const shiftDelay =
-        transmissionTuning.kind === TransmissionKind.Gearbox ? transmissionTuning.shiftDelay : 1;
-    const airPitch =
-        situation.groundedWheelCount > 0 || throttle !== 0
-            ? 1
-            : lerpNumber({
-                  from: motor.airPitch,
-                  to: 0,
-                  amount: 0.5 * 0.01,
-              });
-    const pitchFactor =
-        (throttle !== 0 || situation.groundedWheelCount === 0 ? 1 : 0.5) *
-        (isShifting ? Math.min(shiftDelay, transmission.shiftTime ** 2) / shiftDelay : 1) *
-        airPitch;
 
     return {
-        airPitch,
-        pitch: lerpNumber({
-            from: motor.pitch,
-            to: Math.abs((feedbackRpm * 0.001) / maxKiloRpm) * pitchFactor,
-            amount: 0.1,
-        }),
         rpm,
         throttle,
         torque,
     };
+}
+
+/**
+ * The engine's own speed. Randomation has none: its tachometer reads the wheels' speed through the
+ * gear, which jumps on every shift and reads 0 at a stop. Here a clutch sits between the two. Fully
+ * engaged, the engine turns with the wheels, though a slipping clutch keeps it at idle or above
+ * while launching. In neutral, the engine revs freely toward its throttle.
+ */
+export function stepEngineRpm({
+    clutchPedal,
+    dtSeconds,
+    engineRpm,
+    maxKiloRpm,
+    throttle,
+    transmission,
+    wheelRpm,
+}: Readonly<{
+    engineRpm: number;
+    /** Engine-side RPM coming back from the wheels. */
+    wheelRpm: number;
+    throttle: number;
+    transmission: Readonly<TransmissionState>;
+    clutchPedal: number;
+    maxKiloRpm: number;
+    dtSeconds: number;
+}>) {
+    const redline = maxKiloRpm * 1000;
+    const idle = redline * idleFraction;
+    const input = clamp01(throttle);
+    const launchRpm = lerpNumber({
+        from: idle,
+        to: redline * launchFraction,
+        amount: input,
+    });
+    const wheelSpeed = Math.abs(wheelRpm);
+    /**
+     * Below the launch speed the clutch slips, holding the engine up. The slip fades as the wheels
+     * catch up instead of cutting off, so the engine dips a little as the clutch bites, but a car
+     * lugging along in a tall gear isn't held at launch speed.
+     */
+    const coupledTarget =
+        wheelSpeed < launchRpm
+            ? wheelSpeed + (launchRpm - wheelSpeed) ** 2 / launchRpm
+            : wheelSpeed;
+    const isNeutral = transmission.ratio === 0;
+    const freeTarget = lerpNumber({
+        from: idle,
+        to: redline,
+        amount: input,
+    });
+
+    return lerpNumber({
+        from: engineRpm,
+        to: Math.min(
+            redline,
+            isNeutral
+                ? freeTarget
+                : lerpNumber({
+                      from: coupledTarget,
+                      to: freeTarget,
+                      amount: clutchPedal,
+                  }),
+        ),
+        /**
+         * An open clutch lets the engine glide to the new gear's speed instead of snapping to it,
+         * the way a rev-matching automatic clutch does.
+         */
+        amount: lerpNumber({
+            from: clamp01(dtSeconds / freeRevSeconds),
+            to: 1,
+            amount: isNeutral ? 0 : transmission.clutch,
+        }),
+    });
 }
 
 function getGear(gears: ReadonlyArray<Readonly<GearTuning>>, index: number): Readonly<GearTuning> {
@@ -172,20 +263,37 @@ function findNextGear({
         : Math.min(gears.length - 1, Math.max(0, next));
 }
 
-/** Same as Randomation Vehicle Physics' automatic `GearboxTransmission.FixedUpdate`. */
+function getShiftSeconds(
+    tuning: Readonly<Extract<TransmissionTuning, {kind: TransmissionKind.Gearbox}>>,
+) {
+    return convertDuration(tuning.shiftDuration, {
+        seconds: true,
+    }).seconds;
+}
+
+/**
+ * Same as Randomation Vehicle Physics' automatic `GearboxTransmission.FixedUpdate`, except for when
+ * it shifts between forward gears. Randomation compares the wheels' speed to a speed range per
+ * gear, which upshifts early and at the same engine speed however hard the throttle is pressed.
+ * This shifts at an engine speed that rises with the throttle instead.
+ */
 function stepGearbox({
+    dtSeconds,
+    engineFeedbackRpm,
+    maxKiloRpm,
     situation,
     transmission,
     tuning,
-    wheelFeedbackRpm,
 }: Readonly<{
     transmission: Readonly<TransmissionState>;
     tuning: Readonly<Extract<TransmissionTuning, {kind: TransmissionKind.Gearbox}>>;
     situation: Readonly<DriveSituation>;
-    wheelFeedbackRpm: number;
-}>): TransmissionState {
+    engineFeedbackRpm: number;
+    maxKiloRpm: number;
+    dtSeconds: number;
+}>): Omit<TransmissionState, 'clutch'> {
     const gears = tuning.gears;
-    const shiftTime = Math.max(0, transmission.shiftTime - 1);
+    const shiftSeconds = Math.max(0, transmission.shiftSeconds - dtSeconds);
     const gearIndex = transmission.gearIndex;
     const currentGear = getGear(gears, gearIndex);
     const ratio = currentGear.ratio;
@@ -201,28 +309,47 @@ function stepGearbox({
     });
     const upperGear = getGear(gears, upperIndex);
     const lowerGear = getGear(gears, lowerIndex);
-    const upshiftDifference = currentGear.maxRpm - upperGear.minRpm;
-    const downshiftDifference = lowerGear.maxRpm - currentGear.minRpm;
+    const upshiftRpm =
+        maxKiloRpm *
+        1000 *
+        lerpNumber({
+            from: upshiftFractions.released,
+            to: upshiftFractions.floored,
+            amount: clamp01(situation.accel),
+        });
+    /**
+     * Randomation's speed ranges make reverse and neutral always ready to shift up, and make first
+     * gear ready to shift down into reverse once the wheels stop or roll backward. The checks after
+     * these decide whether they actually do.
+     */
+    const isPastUpshiftPoint =
+        ratio > 0
+            ? Math.abs(engineFeedbackRpm) >= upshiftRpm
+            : ratio === 0 || engineFeedbackRpm >= 0;
+    const isPastDownshiftPoint =
+        lowerGear.ratio > 0 && ratio > 0
+            ? (Math.abs(engineFeedbackRpm) * lowerGear.ratio) / ratio < upshiftRpm * downshiftMargin
+            : engineFeedbackRpm <= 0;
     const firstGearIndex = Math.max(
         0,
         gears.findIndex((gear) => gear.ratio > 0),
     );
 
-    function shiftTo(index: number): TransmissionState {
+    function shiftTo(index: number): Omit<TransmissionState, 'clutch'> {
         return {
             gearIndex: index,
             ratio: getGear(gears, index).ratio,
-            shiftTime: tuning.shiftDelay,
+            shiftSeconds: getShiftSeconds(tuning),
         };
     }
 
-    const unchanged: TransmissionState = {
+    const unchanged: Omit<TransmissionState, 'clutch'> = {
         gearIndex,
         ratio,
-        shiftTime,
+        shiftSeconds,
     };
 
-    if (shiftTime > 0 || situation.groundedWheelCount === 0) {
+    if (shiftSeconds > 0 || situation.groundedWheelCount === 0) {
         return unchanged;
     } else if (situation.burnout > 0) {
         return gearIndex === firstGearIndex ? unchanged : shiftTo(firstGearIndex);
@@ -234,11 +361,7 @@ function stepGearbox({
 
     const shouldUpshift =
         gearIndex < gears.length - 1 &&
-        (upperGear.minRpm +
-            upshiftDifference *
-                (ratio < 0 ? Math.min(1, tuning.shiftThreshold) : tuning.shiftThreshold) -
-            wheelFeedbackRpm <=
-            0 ||
+        (isPastUpshiftPoint ||
             (ratio <= 0 &&
                 upperGear.ratio > 0 &&
                 (!situation.isReversing ||
@@ -247,7 +370,7 @@ function stepGearbox({
         !(situation.forwardSpeed < 0 && situation.accel === 0);
     const shouldDownshift =
         gearIndex > 0 &&
-        (wheelFeedbackRpm - (lowerGear.maxRpm - downshiftDifference * tuning.shiftThreshold) <= 0 ||
+        (isPastDownshiftPoint ||
             (ratio >= 0 &&
                 lowerGear.ratio < 0 &&
                 (situation.isReversing ||
@@ -257,6 +380,41 @@ function stepGearbox({
         (lowerGear.ratio > 0 || situation.forwardSpeed < 1);
 
     return shouldUpshift ? shiftTo(upperIndex) : shouldDownshift ? shiftTo(lowerIndex) : unchanged;
+}
+
+/**
+ * Steps one gear at a time, neutral included, when the driver asks. It refuses reverse while
+ * rolling forward.
+ */
+function stepManualGearbox({
+    dtSeconds,
+    gearChange,
+    situation,
+    transmission,
+    tuning,
+}: Readonly<{
+    transmission: Readonly<TransmissionState>;
+    tuning: Readonly<Extract<TransmissionTuning, {kind: TransmissionKind.Gearbox}>>;
+    situation: Readonly<DriveSituation>;
+    gearChange: number;
+    dtSeconds: number;
+}>): Omit<TransmissionState, 'clutch'> {
+    const targetIndex = Math.min(
+        tuning.gears.length - 1,
+        Math.max(0, transmission.gearIndex + Math.sign(gearChange)),
+    );
+    const targetRatio = getGear(tuning.gears, targetIndex).ratio;
+
+    return targetIndex === transmission.gearIndex || (targetRatio < 0 && situation.forwardSpeed > 1)
+        ? {
+              ...transmission,
+              shiftSeconds: Math.max(0, transmission.shiftSeconds - dtSeconds),
+          }
+        : {
+              gearIndex: targetIndex,
+              ratio: targetRatio,
+              shiftSeconds: getShiftSeconds(tuning),
+          };
 }
 
 /** Same as Randomation Vehicle Physics' `ContinuousTransmission.FixedUpdate`. */
@@ -272,7 +430,7 @@ function stepContinuous({
     situation: Readonly<DriveSituation>;
     engineFeedbackRpm: number;
     maxKiloRpm: number;
-}>): TransmissionState {
+}>): Omit<TransmissionState, 'clutch'> {
     const targetRatio =
         situation.groundedWheelCount > 0
             ? (1 - situation.burnout) *
@@ -298,13 +456,17 @@ function stepContinuous({
 
 /**
  * Shifts or adjusts the ratio, then splits the engine's drive across the driven wheels. Same as
- * Randomation Vehicle Physics' transmissions and their `SetOutputDrives`.
+ * Randomation Vehicle Physics' transmissions and their `SetOutputDrives`, plus a clutch that eases
+ * the drive back in after each shift or when its pedal comes up.
  */
 export function stepTransmission({
     drivenWheelCount,
+    dtSeconds,
     engineFeedbackRpm,
+    engineRpm,
     maxKiloRpm,
     motor,
+    shiftRequest,
     situation,
     transmission,
     tuning,
@@ -313,11 +475,19 @@ export function stepTransmission({
     tuning: Readonly<TransmissionTuning>;
     motor: Readonly<DriveForce>;
     situation: Readonly<DriveSituation>;
+    shiftRequest: Readonly<ShiftRequest>;
     engineFeedbackRpm: number;
+    /** The engine's own speed. See {@link stepEngineRpm}. */
+    engineRpm: number;
     maxKiloRpm: number;
     drivenWheelCount: number;
+    dtSeconds: number;
 }>): {transmission: TransmissionState; wheelDrive: DriveForce} {
-    const isNeutralOrShifting = transmission.ratio === 0 || transmission.shiftTime > 0;
+    const isNeutralOrShifting = transmission.ratio === 0 || transmission.shiftSeconds > 0;
+    const clutchKick =
+        1 +
+        (clutchKickGain * Math.max(0, engineRpm - Math.abs(engineFeedbackRpm))) /
+            (maxKiloRpm * 1000);
     const wheelDrive: DriveForce = isNeutralOrShifting
         ? {
               rpm: 0,
@@ -328,19 +498,28 @@ export function stepTransmission({
               torque:
                   Math.abs(transmission.ratio) *
                   motor.torque *
+                  transmission.clutch *
+                  clutchKick *
                   (1 / Math.max(1, drivenWheelCount)) ** tuning.driveDividePower,
           };
     const next =
         tuning.kind === TransmissionKind.Gearbox
-            ? stepGearbox({
-                  situation,
-                  transmission,
-                  tuning,
-                  wheelFeedbackRpm:
-                      transmission.ratio === 0
-                          ? 0
-                          : engineFeedbackRpm / Math.abs(transmission.ratio),
-              })
+            ? shiftRequest.isManual
+                ? stepManualGearbox({
+                      dtSeconds,
+                      gearChange: shiftRequest.gearChange,
+                      situation,
+                      transmission,
+                      tuning,
+                  })
+                : stepGearbox({
+                      dtSeconds,
+                      engineFeedbackRpm,
+                      maxKiloRpm,
+                      situation,
+                      transmission,
+                      tuning,
+                  })
             : stepContinuous({
                   engineFeedbackRpm,
                   maxKiloRpm,
@@ -350,7 +529,16 @@ export function stepTransmission({
               });
 
     return {
-        transmission: next,
+        transmission: {
+            ...next,
+            clutch:
+                next.shiftSeconds > 0
+                    ? 0
+                    : Math.min(
+                          1 - shiftRequest.clutchPedal,
+                          transmission.clutch + dtSeconds / clutchEngageSeconds,
+                      ),
+        },
         wheelDrive,
     };
 }

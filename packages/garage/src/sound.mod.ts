@@ -1,14 +1,9 @@
 import {defineAnthaMod} from '@antha/engine';
-import {
-    createArray,
-    getEnumValues,
-    getObjectTypedValues,
-    mapObjectValues,
-} from '@augment-vir/common';
+import {createArray, getEnumValues, mapObjectValues} from '@augment-vir/common';
 import {convertDuration, type AnyDuration} from 'date-vir';
 import {type GarageState} from './garage-state.js';
-import {CarPreset} from './physics/vehicle-preset.js';
 import {
+    EngineRecording,
     engineVoices,
     getEngineTargets,
     getScreechTargets,
@@ -22,7 +17,7 @@ import {
 
 /**
  * Gains and frequencies ramp toward each new target with this time constant, so per-frame jumps
- * don't click. It is also how long swapping the engine voice takes to crossfade.
+ * don't click. It is also how long swapping the engine recording takes to crossfade.
  */
 const smoothing: AnyDuration = {
     milliseconds: 40,
@@ -52,16 +47,44 @@ const screechRecordingUrls: Readonly<Record<ScreechKind, URL>> = {
     [ScreechKind.Rim]: new URL('audio/rim-screech.mp3', import.meta.url),
     [ScreechKind.Tire]: new URL('audio/tire-screech.mp3', import.meta.url),
 };
-/** The recordings fade in and out at their ends, so the loop skips those. */
-const recordingFadeIn: AnyDuration = {
-    milliseconds: 600,
+/** RVP's engine recordings, each a steady run at one speed that playback rate bends. */
+const engineRecordingUrls: Readonly<Record<EngineRecording, URL>> = {
+    [EngineRecording.Gas]: new URL('audio/engine.mp3', import.meta.url),
+    [EngineRecording.Hover]: new URL('audio/hover-engine.mp3', import.meta.url),
 };
-const recordingFadeOut: AnyDuration = {
-    milliseconds: 500,
+
+type LoopTrims = {
+    /** Skipped at the recording's start. */
+    start: AnyDuration;
+    /** Skipped at the recording's end. */
+    end: AnyDuration;
+    /** The loop's end blends into its start over this long, so the seam isn't heard. */
+    crossfade: AnyDuration;
 };
-/** The loop's end blends into its start over this long, so the seam isn't heard. */
-const loopCrossfade: AnyDuration = {
-    milliseconds: 300,
+
+/** The screech recordings fade in and out at their ends, so the loop skips those. */
+const screechTrims: Readonly<LoopTrims> = {
+    crossfade: {
+        milliseconds: 300,
+    },
+    end: {
+        milliseconds: 500,
+    },
+    start: {
+        milliseconds: 600,
+    },
+};
+/** The engine recordings are steady throughout; the trims only skip the mp3 encoder's padding. */
+const engineTrims: Readonly<LoopTrims> = {
+    crossfade: {
+        milliseconds: 150,
+    },
+    end: {
+        milliseconds: 50,
+    },
+    start: {
+        milliseconds: 50,
+    },
 };
 /**
  * How fast the screech swells in, fades out, and follows slip in pitch. RVP eases both much slower
@@ -73,13 +96,10 @@ const screechPitchSeconds = 0.5;
 /** The floor an exponential ramp decays to, since it can't reach 0. */
 const silentGain = 0.0001;
 
-type EngineVoiceNodes = {
-    frequencyNodes: ReadonlyArray<{
-        oscillator: OscillatorNode;
-        ratio: number;
-    }>;
-    filter: BiquadFilterNode;
+type RecordingLoop = {
     gain: GainNode;
+    /** Set once the recording has loaded. */
+    source: AudioBufferSourceNode | undefined;
 };
 
 type GarageSound = {
@@ -89,10 +109,10 @@ type GarageSound = {
     master: GainNode;
     /** Sits after every engine voice to duck the engine during a shift. */
     engineDip: GainNode;
-    engineVoiceNodes: Partial<Record<CarPreset, EngineVoiceNodes>>;
-    screechGains: Readonly<Record<ScreechKind, GainNode>>;
-    /** Each screech's looping playback, once its recording has loaded. */
-    screechSources: Partial<Record<ScreechKind, AudioBufferSourceNode>>;
+    /** Sits before the shift dip to dull the engine off throttle. */
+    engineFilter: BiquadFilterNode;
+    engineLoops: Readonly<Record<EngineRecording, RecordingLoop>>;
+    screechLoops: Readonly<Record<ScreechKind, RecordingLoop>>;
     windGain: GainNode;
     windFilter: BiquadFilterNode;
     boostGain: GainNode;
@@ -125,58 +145,6 @@ function startLoopingNoise({
     source.start();
 }
 
-function createEngineVoice({
-    sound,
-    preset,
-}: Readonly<{
-    sound: GarageSound;
-    preset: CarPreset;
-}>): EngineVoiceNodes {
-    const voice = engineVoices[preset];
-    const {context} = sound;
-
-    const gain = context.createGain();
-    gain.gain.value = 0;
-    gain.connect(sound.engineDip);
-
-    const lope = context.createGain();
-    lope.gain.value = 1 - voice.lopeDepth;
-    lope.connect(gain);
-    if (voice.lopeDepth) {
-        const lopeOscillator = context.createOscillator();
-        lopeOscillator.frequency.value = voice.lopeHz;
-        const lopeDepth = context.createGain();
-        lopeDepth.gain.value = voice.lopeDepth;
-        lopeOscillator.connect(lopeDepth).connect(lope.gain);
-        lopeOscillator.start();
-    }
-
-    const filter = context.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.Q.value = voice.filterQ;
-    filter.connect(lope);
-
-    const frequencyNodes = voice.oscillators.map((oscillatorVoice) => {
-        const oscillator = context.createOscillator();
-        oscillator.type = oscillatorVoice.type;
-        const oscillatorGain = context.createGain();
-        oscillatorGain.gain.value = oscillatorVoice.gain / voice.oscillators.length;
-        oscillator.connect(oscillatorGain).connect(filter);
-        oscillator.start();
-
-        return {
-            oscillator,
-            ratio: oscillatorVoice.ratio,
-        };
-    });
-
-    return {
-        filter,
-        frequencyNodes,
-        gain,
-    };
-}
-
 function toSampleCount(context: Readonly<AudioContext>, duration: Readonly<AnyDuration>) {
     return Math.round(
         convertDuration(duration, {
@@ -192,14 +160,16 @@ function toSampleCount(context: Readonly<AudioContext>, duration: Readonly<AnyDu
 function createSeamlessLoop({
     context,
     recording,
+    trims,
 }: Readonly<{
     context: AudioContext;
     recording: AudioBuffer;
+    trims: Readonly<LoopTrims>;
 }>) {
     const samples = recording.getChannelData(0);
-    const start = toSampleCount(context, recordingFadeIn);
-    const end = recording.length - toSampleCount(context, recordingFadeOut);
-    const crossfade = toSampleCount(context, loopCrossfade);
+    const start = toSampleCount(context, trims.start);
+    const end = recording.length - toSampleCount(context, trims.end);
+    const crossfade = toSampleCount(context, trims.crossfade);
     const loop = context.createBuffer(1, end - start - crossfade, context.sampleRate);
     loop.copyToChannel(
         Float32Array.from(
@@ -222,23 +192,69 @@ function createSeamlessLoop({
     return loop;
 }
 
-/** Fetches each screech recording and starts it looping silently, ready to be faded in. */
-async function startScreechLoops(sound: GarageSound) {
-    await Promise.all(
-        getEnumValues(ScreechKind).map(async (kind) => {
-            const response = await fetch(screechRecordingUrls[kind]);
-            const recording = await sound.context.decodeAudioData(await response.arrayBuffer());
-            const source = sound.context.createBufferSource();
-            source.buffer = createSeamlessLoop({
+function createRecordingLoop({
+    context,
+    destination,
+}: Readonly<{
+    context: AudioContext;
+    destination: AudioNode;
+}>): RecordingLoop {
+    const gain = context.createGain();
+    gain.gain.value = 0;
+    gain.connect(destination);
+
+    return {
+        gain,
+        source: undefined,
+    };
+}
+
+/** Fetches a recording and starts it looping, silent until its gain is raised. */
+async function startRecordingLoop({
+    context,
+    loop,
+    trims,
+    url,
+}: Readonly<{
+    context: AudioContext;
+    loop: RecordingLoop;
+    trims: Readonly<LoopTrims>;
+    url: URL;
+}>) {
+    const response = await fetch(url);
+    const recording = await context.decodeAudioData(await response.arrayBuffer());
+    const source = context.createBufferSource();
+    source.buffer = createSeamlessLoop({
+        context,
+        recording,
+        trims,
+    });
+    source.loop = true;
+    source.connect(loop.gain);
+    source.start();
+    loop.source = source;
+}
+
+/** A recording that fails to load leaves its loop silent; the rest still plays. */
+async function startRecordingLoops(sound: Readonly<GarageSound>) {
+    await Promise.all([
+        ...getEnumValues(ScreechKind).map(async (kind) => {
+            await startRecordingLoop({
                 context: sound.context,
-                recording,
+                loop: sound.screechLoops[kind],
+                trims: screechTrims,
+                url: screechRecordingUrls[kind],
             });
-            source.loop = true;
-            source.connect(sound.screechGains[kind]);
-            source.start();
-            sound.screechSources[kind] = source;
         }),
-    );
+        ...getEnumValues(EngineRecording).map(async (recording) => {
+            await startRecordingLoop({
+                context: sound.context,
+                loop: sound.engineLoops[recording],
+                trims: engineTrims,
+                url: engineRecordingUrls[recording],
+            });
+        }),
+    ]);
 }
 
 function createGarageSound(): GarageSound {
@@ -250,13 +266,21 @@ function createGarageSound(): GarageSound {
 
     const engineDip = context.createGain();
     engineDip.connect(master);
+    const engineFilter = context.createBiquadFilter();
+    engineFilter.type = 'lowpass';
+    engineFilter.connect(engineDip);
 
-    const screechGains = mapObjectValues(screechRecordingUrls, () => {
-        const gain = context.createGain();
-        gain.gain.value = 0;
-        gain.connect(master);
-
-        return gain;
+    const screechLoops = mapObjectValues(screechRecordingUrls, () => {
+        return createRecordingLoop({
+            context,
+            destination: master,
+        });
+    });
+    const engineLoops = mapObjectValues(engineRecordingUrls, () => {
+        return createRecordingLoop({
+            context,
+            destination: engineFilter,
+        });
     });
 
     const windGain = context.createGain();
@@ -286,11 +310,11 @@ function createGarageSound(): GarageSound {
         boostGain,
         context,
         engineDip,
-        engineVoiceNodes: {},
+        engineFilter,
+        engineLoops,
         master,
         noise,
-        screechGains,
-        screechSources: {},
+        screechLoops,
         windFilter,
         windGain,
     };
@@ -361,8 +385,8 @@ function playOneShot({
 }
 
 /**
- * Synthesizes the garage car's sound from `state.vehicleView`: an engine voice per preset (or a
- * turbine whine for the hover car), shift blips, tire screech, boost, crashes, tire pops, wheels
+ * Plays the garage car's sound from `state.vehicleView`: RVP's engine recording bent in pitch (or
+ * its turbine for the hover car), shift blips, tire screech, boost, crashes, tire pops, wheels
  * coming off, and wind.
  */
 export function createGarageSoundMod() {
@@ -394,8 +418,7 @@ export function createGarageSoundMod() {
                     return;
                 }
                 runtime.sound = createGarageSound();
-                /** A recording that fails to load leaves its screech silent; the rest still plays. */
-                void startScreechLoops(runtime.sound);
+                void startRecordingLoops(runtime.sound);
             }
 
             const sound = runtime.sound;
@@ -409,41 +432,30 @@ export function createGarageSoundMod() {
                 view,
             });
 
-            sound.engineVoiceNodes[view.preset] ??= createEngineVoice({
-                preset: view.preset,
-                sound,
-            });
-            getObjectTypedValues(CarPreset).forEach((preset) => {
-                const nodes = sound.engineVoiceNodes[preset];
-                if (!nodes) {
-                    return;
-                }
-                if (preset === view.preset) {
-                    nodes.frequencyNodes.forEach(({oscillator, ratio}) => {
-                        oscillator.frequency.setTargetAtTime(
-                            engine.frequency * ratio,
-                            now,
-                            smoothingSeconds,
-                        );
-                    });
-                    nodes.filter.frequency.setTargetAtTime(
-                        engine.filterFrequency,
+            sound.engineFilter.frequency.setTargetAtTime(
+                engine.filterFrequency,
+                now,
+                smoothingSeconds,
+            );
+            const engineRecording = engineVoices[view.preset].recording;
+            getEnumValues(EngineRecording).forEach((recording) => {
+                const loop = sound.engineLoops[recording];
+                const isPlaying = recording === engineRecording && engine.isAudible;
+                if (isPlaying) {
+                    loop.source?.playbackRate.setTargetAtTime(
+                        engine.playbackRate,
                         now,
                         smoothingSeconds,
                     );
                 }
-                nodes.gain.gain.setTargetAtTime(
-                    preset === view.preset && engine.isAudible ? engine.gain : 0,
-                    now,
-                    smoothingSeconds,
-                );
+                loop.gain.gain.setTargetAtTime(isPlaying ? engine.gain : 0, now, smoothingSeconds);
             });
 
             const screech = getScreechTargets({
                 view,
             });
             getEnumValues(ScreechKind).forEach((kind) => {
-                const gain = sound.screechGains[kind].gain;
+                const gain = sound.screechLoops[kind].gain.gain;
                 const target =
                     (kind === ScreechKind.Rim) === screech.isRim ? screech.gain * 0.8 : 0;
                 gain.setTargetAtTime(
@@ -452,7 +464,7 @@ export function createGarageSoundMod() {
                     target > gain.value ? screechRiseSeconds : screechFallSeconds,
                 );
                 if (screech.gain) {
-                    sound.screechSources[kind]?.playbackRate.setTargetAtTime(
+                    sound.screechLoops[kind].source?.playbackRate.setTargetAtTime(
                         screech.playbackRate,
                         now,
                         screechPitchSeconds,

@@ -1,3 +1,4 @@
+import {createArray} from '@augment-vir/common';
 import {evaluateCurve} from './animation-curve.js';
 import {type DriveForce} from './drivetrain.js';
 import {
@@ -56,6 +57,71 @@ const degreesToRadians = Math.PI / 180;
  * bump hard sheds speed, more the harder it hits.
  */
 const bumpStopFriction = 0.5;
+
+/** Where {@link forwardFrictionCurve} peaks. */
+const peakGripSlip = 0.201;
+/**
+ * The slip the brakes alone have to ask for before they lock the wheel. Brake demand grows with
+ * speed, so this is how fast the car has to be going for a full stomp on the brakes to skid.
+ */
+const brakeLockSlip = 8;
+/**
+ * Extra forward grip at full brake. Without it the tires cap braking at about 1 g, which feels slow
+ * to stop in a game.
+ */
+const brakeGrip = 1.35;
+
+/**
+ * The slip below {@link peakGripSlip} where {@link forwardFrictionCurve} reaches `grip`, found by
+ * halving. It never returns zero, since a wheel at exactly zero slip doesn't push at all.
+ */
+function getSlipForGrip(grip: number) {
+    return createArray(14, () => 0).reduce(
+        (range) => {
+            const middle = (range.low + range.high) / 2;
+
+            return evaluateCurve(forwardFrictionCurve, middle) < grip
+                ? {
+                      high: range.high,
+                      low: middle,
+                  }
+                : {
+                      high: middle,
+                      low: range.low,
+                  };
+        },
+        {
+            high: peakGripSlip,
+            low: 0,
+        },
+    ).high;
+}
+
+/**
+ * The wheel's slip once the road pushes back on it. `demand` is how far the engine and brakes alone
+ * would spin the wheel past the ground's speed, and `push` is how hard that pushes the car. A tire
+ * that can hold `push` keeps the wheel just past the ground's speed, at the slip that makes the
+ * same push. One that can't, or that the engine or brakes drive past `breakLooseSlip`, breaks loose
+ * and spins or locks all the way to `demand`.
+ */
+function getHeldSlip({
+    breakLooseSlip,
+    demand,
+    grip,
+    holdLimit,
+    push,
+}: Readonly<{
+    demand: number;
+    push: number;
+    /** The tire's grip, which {@link forwardFrictionCurve} scales. */
+    grip: number;
+    holdLimit: number;
+    breakLooseSlip: number;
+}>) {
+    return push > holdLimit || Math.abs(demand) > breakLooseSlip
+        ? demand
+        : Math.sign(demand) * Math.min(Math.abs(demand), getSlipForGrip(push / grip));
+}
 
 /** A wheel that has broken off and bounces around on its own. */
 export type LooseWheel = {
@@ -193,6 +259,7 @@ export function getWheelPose({
 /** What the car asks of one wheel on one step. */
 export type WheelInputs = {
     accel: number;
+    /** The pedal braking this wheel, whichever one the driver is using to brake. */
     brake: number;
     ebrake: number;
     burnout: number;
@@ -330,9 +397,7 @@ export function stepWheel({
 
     const targetRpm = tuning.isDriven ? drive.rpm : 0;
     const brakeAmount =
-        tuning.brakeForce *
-        (inputs.forwardSpeed > 0 ? inputs.brake : clamp01(inputs.accel)) *
-        (targetRpm === 0 ? 1 : 1 - inputs.burnout);
+        tuning.brakeForce * inputs.brake * (targetRpm === 0 ? 1 : 1 - inputs.burnout);
     const ebrakeAmount = tuning.ebrakeForce * inputs.ebrake;
     const torque = tuning.isDriven
         ? lerpNumber({
@@ -348,7 +413,8 @@ export function stepWheel({
               to: targetRpm,
               amount: torque + brakeAmount + ebrakeAmount,
           });
-    const currentRpm = lerpNumber({
+    /** How fast the engine and brakes would turn the wheel if the road didn't push back. */
+    const engineOnlyRpm = lerpNumber({
         from: rawRpm,
         to: lerpNumber({
             from: lerpNumber({
@@ -361,7 +427,34 @@ export function stepWheel({
         }),
         amount: torque + brakeAmount + ebrakeAmount,
     });
-    const forwardSlip = isGrounded ? 0.01 * (rawRpm - currentRpm) : 0;
+    const demandSlip = 0.01 * (rawRpm - engineOnlyRpm);
+    const grip = wheel.isPopped ? 0.5 : tuning.forwardFriction;
+    /**
+     * Randomation lets the engine and brakes set the wheel's speed on their own, so the driven
+     * wheels spin at every hard launch. Here the road holds the wheel near the ground's speed
+     * unless the push is more than the tire can take: a popped tire, a burnout, a locked handbrake,
+     * or a powerful engine flooring it.
+     */
+    const forwardSlip = isGrounded
+        ? ebrakeAmount > 0
+            ? demandSlip
+            : getHeldSlip({
+                  breakLooseSlip:
+                      Math.abs(engineOnlyRpm) > Math.abs(rawRpm)
+                          ? tuning.breakLooseSlip
+                          : brakeLockSlip,
+                  demand: demandSlip,
+                  grip,
+                  holdLimit:
+                      grip *
+                      evaluateCurve(forwardFrictionCurve, peakGripSlip) *
+                      (1 - inputs.burnout),
+                  push:
+                      tuning.forwardFriction *
+                      evaluateCurve(forwardFrictionCurve, Math.abs(demandSlip)),
+              })
+        : 0;
+    const currentRpm = isGrounded ? rawRpm - forwardSlip / 0.01 : engineOnlyRpm;
     const sidewaysSlip = isGrounded ? sidewaysVelocity * 0.1 : 0;
 
     const tire = {
@@ -448,7 +541,14 @@ export function stepWheel({
     const forwardForce =
         evaluateCurve(forwardFrictionCurve, Math.abs(forwardSlip)) *
         -Math.sign(forwardSlip) *
-        (nextWheel.isPopped ? 0.5 : tuning.forwardFriction);
+        (nextWheel.isPopped ? 0.5 : tuning.forwardFriction) *
+        /**
+         * The gas pedal also brakes the car from a standstill, and boosting that would change every
+         * launch.
+         */
+        (inputs.accel === 0 && Math.abs(engineOnlyRpm) < Math.abs(rawRpm)
+            ? 1 + (brakeGrip - 1) * inputs.brake
+            : 1);
     const sidewaysForce =
         evaluateCurve(tuning.sidewaysFrictionCurve, Math.abs(sidewaysSlip - forwardSlip)) *
         -Math.sign(sidewaysSlip) *

@@ -5,6 +5,7 @@ import {type DriveBinding} from '@evir/driving-common/src/drive-binding.js';
 import {type GarageBinding} from './garage-binding.js';
 import {type CarPreset} from './physics/vehicle-preset.js';
 import {type VehicleSimulation} from './physics/vehicle-sim.js';
+import {type RouteRun} from './route-run.js';
 import {type VehicleView} from './vehicle-view.js';
 
 export type GarageState = AnthaModsState<
@@ -19,6 +20,9 @@ export type GarageState = AnthaModsState<
     /** The controls the car moved with this frame, after clamping. */
     carControls: CarControls;
     garage: GarageMenu;
+    /** Whether the driver shifts gears themselves. It stays set across car swaps. */
+    isManualShifting: boolean;
+    routeRun: RouteRun;
 };
 
 export type GarageMenu = {

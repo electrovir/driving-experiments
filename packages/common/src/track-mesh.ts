@@ -32,7 +32,7 @@ const paintMaterialOptions = {
  * A strip running alongside the road's center, between two distances to its right. It loops back to
  * the first sample unless `isOpen`.
  */
-function createStrip({
+export function createStrip({
     height,
     isOpen,
     leftOffset,

@@ -1,5 +1,4 @@
 import {createArray, getObjectTypedEntries} from '@augment-vir/common';
-import {boundaryHalfWidth} from '@evir/driving-common/src/road-network.js';
 import {createRoadNetworkMesh} from '@evir/driving-common/src/track-mesh.js';
 import {
     Container3D,
@@ -12,9 +11,9 @@ import {
 } from '@pixi/3d';
 import {Texture} from 'pixi.js';
 import {
+    arenaHalfWidth,
     arenaLayout,
     garageInterior,
-    garageLotBounds,
     garageSpawn,
     garageStallWidth,
     garageWallHeight,
@@ -23,7 +22,7 @@ import {
 import {parkingSpots} from './garage-parking.js';
 import {carPresets} from './physics/vehicle-preset.js';
 
-const groundSize = 2 * boundaryHalfWidth + 10;
+const groundSize = 2 * arenaHalfWidth + 10;
 const outerWallHeight = 3.5;
 const outerWallThickness = 1;
 const gridSpacing = 10;
@@ -130,13 +129,13 @@ function createGround() {
         baseColor: 0x9a_96_8e,
         roughness: 0.9,
     });
-    const wallLength = 2 * (boundaryHalfWidth + outerWallThickness);
+    const wallLength = 2 * (arenaHalfWidth + outerWallThickness);
 
     [
         -1,
         1,
     ].forEach((side) => {
-        const center = side * (boundaryHalfWidth + outerWallThickness / 2);
+        const center = side * (arenaHalfWidth + outerWallThickness / 2);
 
         ground.addChild(
             createBox({
@@ -229,10 +228,6 @@ function createGarage() {
         baseColor: 0x4a_50_58,
         roughness: 0.8,
     });
-    const floorMaterial = new Material3D({
-        baseColor: 0x3a_3d_42,
-        roughness: 0.7,
-    });
     const lightStripMaterial = new Material3D({
         baseColor: 0xff_ff_ff,
         emissive: {
@@ -281,16 +276,6 @@ function createGarage() {
             x: garageInterior.center.x,
             y: garageWallHeight,
             z: garageInterior.center.z,
-        }),
-        createFlatPlane({
-            material: floorMaterial,
-            size: {
-                x: garageLotBounds.maxX - garageLotBounds.minX,
-                z: garageLotBounds.maxZ - garageLotBounds.minZ,
-            },
-            x: (garageLotBounds.maxX + garageLotBounds.minX) / 2,
-            y: 0.02,
-            z: (garageLotBounds.maxZ + garageLotBounds.minZ) / 2,
         }),
         ...[
             frontZ,

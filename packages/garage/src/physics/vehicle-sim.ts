@@ -1,4 +1,9 @@
-import {createArray, getEnumValues, mapObjectValues} from '@augment-vir/common';
+import {
+    createArray,
+    getEnumValues,
+    mapObjectValues,
+    type PartialWithUndefined,
+} from '@augment-vir/common';
 import {type CarControls} from '@evir/driving-common/src/car-controls.js';
 import {WheelPosition} from '@evir/driving-common/src/car-pose.js';
 import {type GroundPoint} from '@evir/driving-common/src/track-layout.js';
@@ -10,10 +15,12 @@ import {
     createMotorState,
     createTransmissionState,
     getGearLabel,
+    stepEngineRpm,
     stepGasMotor,
     stepTransmission,
     type DriveSituation,
     type MotorState,
+    type ShiftRequest,
     type TransmissionState,
 } from './drivetrain.js';
 import {createHoverPadState, getHoverDrive, stepHoverPad, type HoverPadState} from './hover.js';
@@ -31,7 +38,6 @@ import {
     type BodyShape,
     type RigidBody,
 } from './rigid-body.js';
-import {createStuntState, stepStunts, type StuntState} from './stunt-detect.js';
 import {
     addVectors,
     clamp01,
@@ -53,6 +59,7 @@ import {
 } from './vector.js';
 import {
     carPresets,
+    TransmissionKind,
     VehicleKind,
     type BodyBox,
     type CarPreset,
@@ -76,15 +83,18 @@ const yAxis = createVector({
     z: 0,
 });
 const maxSubstepSeconds = 0.01;
-/** Randomation Vehicle Physics counts its per-step rates at Unity's default physics rate. */
-const unityStepSeconds = 0.02;
 /** Sheet metal and glass scraping on the road. */
-const bodyFriction = 0.8;
+const bodyFriction = 0.3;
 /**
  * Fraction of its spin per second a car loses while its body touches something. A real car's body
  * crumples and scrapes as it rolls, which a rigid box tumbling on its corners doesn't.
  */
 const crushSpinDamping = 2;
+/**
+ * Fraction of its sliding speed per second a car loses while its body touches something. Without
+ * it, the scraping body turns its slide into more spin and the car keeps rolling over.
+ */
+const crushSlideDamping = 3;
 /** Hits closer together than this count as one, like Randomation's `VehicleDamage`. */
 const hitCooldownSeconds = 0.1;
 /** Body points this far above the ground under the car can't be touching anything. */
@@ -106,7 +116,7 @@ export type VehicleInputs = CarControls & {
     isBoostHeld: boolean;
     /** From -1 to 1. Positive raises the right side. */
     roll: number;
-};
+} & PartialWithUndefined<ShiftRequest>;
 
 /** The physics' whole state. Everything is in the physics' mirrored frame; see `mirrorVector`. */
 export type VehicleSimulation = {
@@ -116,12 +126,11 @@ export type VehicleSimulation = {
     wheels: Record<WheelPosition, WheelState>;
     pads: Record<WheelPosition, HoverPadState>;
     motor: MotorState;
-    /** The engine speed the driven wheels turn it at, which the tachometer shows. */
+    /** The engine's own speed, which the tachometer shows. See {@link stepEngineRpm}. */
     engineRpm: number;
     transmission: TransmissionState;
     hover: Pick<ReturnType<typeof getHoverDrive>, 'pitch' | 'throttle'>;
     health: number;
-    boost: number;
     isBoosting: boolean;
     wasBoostHeld: boolean;
     burnout: number;
@@ -133,7 +142,6 @@ export type VehicleSimulation = {
     stuckSeconds: number;
     /** Seconds left that the car blinks after being set back on its wheels. */
     blinkSeconds: number;
-    stunt: StuntState;
     /** Hits since the frame began, already in the scene's frame. */
     impacts: VehicleImpact[];
     lastInputs: VehicleInputs;
@@ -197,7 +205,6 @@ function createAtPose({
             velocity: zeroVector,
         },
         blinkSeconds: 0,
-        boost: 1,
         burnout: 0,
         engineRpm: 0,
         health: 1,
@@ -216,14 +223,14 @@ function createAtPose({
         pads: mapObjectValues(wheelSides, () => createHoverPadState()),
         preset,
         shape,
-        stunt: createStuntState(origin),
         transmission:
             tuning.vehicle.kind === VehicleKind.Wheeled
                 ? createTransmissionState(tuning.vehicle.transmission)
                 : {
+                      clutch: 1,
                       gearIndex: 0,
                       ratio: 1,
-                      shiftTime: 0,
+                      shiftSeconds: 0,
                   },
         wasBoostHeld: false,
         wheels: mapObjectValues(wheelSides, () => createWheelState()),
@@ -344,16 +351,13 @@ export function recoverVehicle({
         world,
     });
 
-    return switchVehicle({
-        from: vehicle,
-        to: {
-            ...fresh,
-            areHeadlightsOn: vehicle.areHeadlightsOn,
-            blinkSeconds: convertDuration(recoveryBlink, {
-                seconds: true,
-            }).seconds,
-        },
-    });
+    return {
+        ...fresh,
+        areHeadlightsOn: vehicle.areHeadlightsOn,
+        blinkSeconds: convertDuration(recoveryBlink, {
+            seconds: true,
+        }).seconds,
+    };
 }
 
 /**
@@ -368,34 +372,13 @@ export function takeParkedVehicle({
     driven: Readonly<VehicleSimulation>;
     parked: Readonly<VehicleSimulation>;
 }>) {
-    return switchVehicle({
-        from: driven,
-        to: {
-            ...parked,
-            body: {
-                ...parked.body,
-                angularVelocity: driven.body.angularVelocity,
-                rotation: driven.body.rotation,
-                velocity: driven.body.velocity,
-            },
-        },
-    });
-}
-
-/** Puts the driver in another car, keeping their score. */
-export function switchVehicle({
-    from,
-    to,
-}: Readonly<{
-    from: Readonly<VehicleSimulation>;
-    to: Readonly<VehicleSimulation>;
-}>): VehicleSimulation {
     return {
-        ...to,
-        stunt: {
-            ...to.stunt,
-            lastCompleted: from.stunt.lastCompleted,
-            totalScore: from.stunt.totalScore,
+        ...parked,
+        body: {
+            ...parked.body,
+            angularVelocity: driven.body.angularVelocity,
+            rotation: driven.body.rotation,
+            velocity: driven.body.velocity,
         },
     };
 }
@@ -857,6 +840,26 @@ function damageWheel({
     };
 }
 
+/** The driver's manual shifting, which only a car with a gearbox obeys. */
+function getShiftRequest({
+    inputs,
+    tuning,
+}: Readonly<{
+    inputs: Readonly<VehicleInputs>;
+    tuning: Readonly<CarPresetTuning>;
+}>): ShiftRequest {
+    const isManual =
+        !!inputs.isManual &&
+        tuning.vehicle.kind === VehicleKind.Wheeled &&
+        tuning.vehicle.transmission.kind === TransmissionKind.Gearbox;
+
+    return {
+        clutchPedal: isManual ? clamp01(inputs.clutchPedal ?? 0) : 0,
+        gearChange: inputs.gearChange ?? 0,
+        isManual,
+    };
+}
+
 function getGroundedCount(vehicle: Readonly<VehicleSimulation>) {
     return carPresets[vehicle.preset].vehicle.kind === VehicleKind.Hover
         ? Object.values(vehicle.pads).filter((pad) => pad.contact).length
@@ -894,7 +897,12 @@ function stepDriverState({
         amount: dtSeconds * 5,
     });
     const burnout = !isBurningOut && lerpedBurnout < 0.01 ? 0 : lerpedBurnout;
+    /** A manual car reverses by its gear, and its brake pedal only ever brakes. */
     const isReversing =
+        !getShiftRequest({
+            inputs,
+            tuning,
+        }).isManual &&
         burnout === 0 &&
         ((inputs.brake > 0 && forwardSpeed < 1) ||
             (forwardSpeed < 0 &&
@@ -908,7 +916,6 @@ function stepDriverState({
     const canBoost =
         vehicle.health > 0 &&
         !vehicle.isCrashing &&
-        vehicle.boost > 0 &&
         (isHover
             ? input !== 0 || Math.abs(forwardSpeed) > 1
             : inputs.throttle > 0 || forwardSpeed > 1);
@@ -916,12 +923,6 @@ function stepDriverState({
         inputs.isBoostHeld && canBoost && (vehicle.isBoosting || !vehicle.wasBoostHeld);
 
     return {
-        boost: isBoosting
-            ? Math.max(
-                  0,
-                  vehicle.boost - tuning.boostBurnRate * 0.05 * (dtSeconds / unityStepSeconds),
-              )
-            : vehicle.boost,
         boostBoost: evaluateCurve(tuning.boostPowerCurve, Math.abs(forwardSpeed)),
         burnout,
         forwardSpeed,
@@ -940,6 +941,33 @@ function stepDriverState({
 const rollingResistance = 0.15;
 const engineBraking = 0.8;
 const airDrag = 0.0004;
+/**
+ * Slowing in meters per second squared per redline that the wheels would spin the engine past its
+ * redline, as after shifting down too far. It applies whatever the pedals do.
+ */
+const overRevBraking = 25;
+
+/** Engine-side RPM coming back from the driven wheels through the current gear. */
+function getEngineFeedbackRpm({
+    tuning,
+    vehicle,
+}: Readonly<{
+    vehicle: Readonly<VehicleSimulation>;
+    tuning: Readonly<WheeledTuning>;
+}>) {
+    const drivenPositions = getEnumValues(WheelPosition).filter(
+        (position) => tuning.wheels[position].isDriven && !vehicle.wheels[position].loose,
+    );
+
+    return drivenPositions.length
+        ? (drivenPositions.reduce(
+              (sum, position) => sum + vehicle.wheels[position].feedbackRpm,
+              0,
+          ) /
+              drivenPositions.length) *
+              vehicle.transmission.ratio
+        : 0;
+}
 
 /**
  * How a car on its wheels slows along its length while coasting. It never pushes the car past a
@@ -958,14 +986,30 @@ function getCoastAcceleration({
     inputs: Readonly<Pick<VehicleInputs, 'throttle' | 'brake'>>;
     dtSeconds: number;
 }>) {
+    const tuning = carPresets[vehicle.preset].vehicle;
+
     /** The engine's first run reports no elapsed time, and the stop-at-zero cap below divides by it. */
-    if (!dtSeconds || carPresets[vehicle.preset].vehicle.kind === VehicleKind.Hover) {
+    if (!dtSeconds || tuning.kind === VehicleKind.Hover) {
         return zeroVector;
     }
 
+    /** How much of the engine the wheels feel: none in neutral or with the clutch open. */
+    const engineCoupling = vehicle.transmission.ratio === 0 ? 0 : vehicle.transmission.clutch;
+    const overRev = Math.max(
+        0,
+        Math.abs(
+            getEngineFeedbackRpm({
+                tuning,
+                vehicle,
+            }),
+        ) /
+            (getCurveEndTime(tuning.motor.torqueCurve) * 1000) -
+            1,
+    );
     const slowing =
         (rollingResistance +
-            (inputs.throttle || inputs.brake ? 0 : engineBraking) +
+            ((inputs.throttle || inputs.brake ? 0 : engineBraking) + overRevBraking * overRev) *
+                engineCoupling +
             airDrag * driver.forwardSpeed ** 2) *
         Math.min(1, driver.groundedWheelCount / getEnumValues(WheelPosition).length);
 
@@ -1103,6 +1147,11 @@ function substep({
                       accelerated.angularVelocity,
                       Math.exp(-crushSpinDamping * dtSeconds),
                   ),
+                  velocity: {
+                      ...accelerated.velocity,
+                      x: accelerated.velocity.x * Math.exp(-crushSlideDamping * dtSeconds),
+                      z: accelerated.velocity.z * Math.exp(-crushSlideDamping * dtSeconds),
+                  },
               }
             : accelerated,
         contacts: [
@@ -1134,7 +1183,6 @@ function substep({
             body: resolved,
             dtSeconds,
         }),
-        boost: driver.boost,
         burnout: driver.burnout,
         hitCooldownSeconds: Math.max(0, vehicle.hitCooldownSeconds - dtSeconds),
         isBoosting: driver.isBoosting,
@@ -1152,21 +1200,9 @@ function substep({
               })
             : moved;
     const groundedWheelCount = getGroundedCount(hit);
-    const stunts = stepStunts({
-        dtSeconds,
-        groundedWheelCount,
-        isCrashing: hit.isCrashing,
-        localAngularVelocity: inverseRotateVector(hit.body.rotation, hit.body.angularVelocity),
-        localVelocity: inverseRotateVector(hit.body.rotation, hit.body.velocity),
-        position: getBodyOrigin(hit),
-        stunt: hit.stunt,
-    });
-
     return {
         ...hit,
-        boost: Math.min(1, hit.boost + stunts.boostGain),
         isCrashing: hit.isCrashing && groundedWheelCount === 0,
-        stunt: stunts.stunt,
     };
 }
 
@@ -1188,27 +1224,29 @@ function stepWheeledCar({
     const drivenPositions = getEnumValues(WheelPosition).filter(
         (position) => tuning.wheels[position].isDriven && !vehicle.wheels[position].loose,
     );
-    const engineFeedbackRpm = drivenPositions.length
-        ? (drivenPositions.reduce(
-              (sum, position) => sum + vehicle.wheels[position].feedbackRpm,
-              0,
-          ) /
-              drivenPositions.length) *
-          vehicle.transmission.ratio
-        : 0;
+    const engineFeedbackRpm = getEngineFeedbackRpm({
+        tuning,
+        vehicle,
+    });
     const motor = stepGasMotor({
         feedbackRpm: engineFeedbackRpm,
         motor: vehicle.motor,
         situation,
-        transmission: vehicle.transmission,
-        transmissionTuning: tuning.transmission,
         tuning: tuning.motor,
+    });
+    const maxKiloRpm = getCurveEndTime(tuning.motor.torqueCurve);
+    const shiftRequest = getShiftRequest({
+        inputs,
+        tuning: carPresets[vehicle.preset],
     });
     const drivetrain = stepTransmission({
         drivenWheelCount: drivenPositions.length,
+        dtSeconds,
         engineFeedbackRpm,
-        maxKiloRpm: getCurveEndTime(tuning.motor.torqueCurve),
+        engineRpm: vehicle.engineRpm,
+        maxKiloRpm,
         motor,
+        shiftRequest,
         situation,
         transmission: vehicle.transmission,
         tuning: tuning.transmission,
@@ -1222,7 +1260,11 @@ function stepWheeledCar({
             dtSeconds,
             inputs: {
                 accel: inputs.throttle,
-                brake: inputs.brake,
+                /** Randomation brakes with the gas pedal while rolling backward. */
+                brake:
+                    shiftRequest.isManual || situation.forwardSpeed > 0
+                        ? inputs.brake
+                        : clamp01(inputs.throttle),
                 burnout: situation.burnout,
                 burnoutSpin: tuning.burnoutSpin,
                 ebrake: inputs.handbrake,
@@ -1261,7 +1303,15 @@ function stepWheeledCar({
         contacts: Object.values(stepped).flatMap((result) => result.contacts),
         pads: vehicle.pads,
         parts: {
-            engineRpm: engineFeedbackRpm,
+            engineRpm: stepEngineRpm({
+                clutchPedal: shiftRequest.clutchPedal,
+                dtSeconds,
+                engineRpm: vehicle.engineRpm,
+                maxKiloRpm,
+                throttle: motor.throttle,
+                transmission: drivetrain.transmission,
+                wheelRpm: engineFeedbackRpm,
+            }),
             motor,
             transmission: drivetrain.transmission,
         },
@@ -1336,10 +1386,16 @@ export function stepVehicleSimulation({
 }>): VehicleSimulation {
     const substepCount = Math.max(1, Math.ceil(dtSeconds / maxSubstepSeconds));
     const stepped = createArray(substepCount, () => undefined).reduce<VehicleSimulation>(
-        (current) => {
+        (current, unused, index) => {
             return substep({
                 dtSeconds: dtSeconds / substepCount,
-                inputs,
+                /** A shift press is one gear, not one per substep. */
+                inputs: index
+                    ? {
+                          ...inputs,
+                          gearChange: 0,
+                      }
+                    : inputs,
                 vehicle: current,
                 world,
             });
@@ -1456,7 +1512,6 @@ export function getVehicleView(vehicle: Readonly<VehicleSimulation>): VehicleVie
 
     return {
         boost: {
-            amount: vehicle.boost,
             isBoosting: vehicle.isBoosting,
         },
         engine:
@@ -1464,6 +1519,7 @@ export function getVehicleView(vehicle: Readonly<VehicleSimulation>): VehicleVie
                 ? {
                       gearLabel: 'Hover',
                       isShifting: false,
+                      shiftModeLabel: '',
                       kiloRpm:
                           vehicle.hover.pitch * getCurveEndTime(tuning.vehicle.forceCurve) * 0.1,
                       pitch: vehicle.hover.pitch,
@@ -1474,9 +1530,21 @@ export function getVehicleView(vehicle: Readonly<VehicleSimulation>): VehicleVie
                           transmission: vehicle.transmission,
                           tuning: tuning.vehicle.transmission,
                       }),
-                      isShifting: vehicle.transmission.shiftTime > 0,
-                      kiloRpm: Math.abs(vehicle.engineRpm) * 0.001,
-                      pitch: vehicle.motor.pitch,
+                      isShifting: vehicle.transmission.shiftSeconds > 0,
+                      kiloRpm: vehicle.engineRpm * 0.001,
+                      pitch: clamp01(
+                          vehicle.engineRpm /
+                              (getCurveEndTime(tuning.vehicle.motor.torqueCurve) * 1000),
+                      ),
+                      shiftModeLabel:
+                          tuning.vehicle.transmission.kind === TransmissionKind.Gearbox
+                              ? getShiftRequest({
+                                    inputs,
+                                    tuning,
+                                }).isManual
+                                  ? 'M'
+                                  : 'A'
+                              : '',
                       throttle: clamp01(vehicle.motor.throttle),
                   },
         forwardSpeed,
@@ -1499,11 +1567,6 @@ export function getVehicleView(vehicle: Readonly<VehicleSimulation>): VehicleVie
         position: mirrorVector(getBodyOrigin(vehicle)),
         preset: vehicle.preset,
         rotation: mirrorQuaternion(vehicle.body.rotation),
-        stunt: {
-            current: vehicle.stunt.current,
-            lastCompleted: vehicle.stunt.lastCompleted,
-            totalScore: vehicle.stunt.totalScore,
-        },
         velocity: mirrorVector(vehicle.body.velocity),
         wheels: getWheelViews(vehicle),
     };
