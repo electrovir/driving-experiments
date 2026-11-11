@@ -24,6 +24,9 @@
             "path": "../flat-plane"
         },
         {
+            "path": "../garage"
+        },
+        {
             "path": "../tires-and-gears"
         }
     ]

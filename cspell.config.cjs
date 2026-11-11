@@ -7,5 +7,13 @@ module.exports = {
     ],
     words: [
         ...baseConfig.words,
+        'downforce',
+        'ebrake',
+        'lerp',
+        'lerped',
+        'lerps',
+        'Mathf',
+        'Randomation',
+        'substep',
     ],
 };

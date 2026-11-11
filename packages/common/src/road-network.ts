@@ -551,8 +551,15 @@ export function createRoadSurface(network: Readonly<RoadNetwork>) {
                     };
                 }).reduce((best, sample) => (sample.height > best.height ? sample : best));
 
-                if (touch.height - wheelBottom > radius) {
-                    const depth = obstacle.halfWidth + radius - Math.abs(across);
+                const sideDepth = obstacle.halfWidth + radius - Math.abs(across);
+
+                /**
+                 * A point that came down onto the obstacle from above, such as a car landing a jump
+                 * onto a slope, sits nearer the top than a side and gets pushed back up instead of
+                 * across the whole obstacle.
+                 */
+                if (touch.height - wheelBottom > radius && sideDepth < touch.height - wheelBottom) {
+                    const depth = sideDepth;
 
                     return depth > (contact.wall?.depth ?? 0)
                         ? {

@@ -19,6 +19,7 @@
         "@evir/driving-arcade-physics": "*",
         "@evir/driving-core": "*",
         "@evir/driving-flat-plane": "*",
+        "@evir/driving-garage": "*",
         "@evir/driving-tires-and-gears": "*",
         "date-vir": "^9.4.1",
         "element-vir": "^27.0.2",

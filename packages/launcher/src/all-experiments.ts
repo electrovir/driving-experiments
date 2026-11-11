@@ -2,12 +2,14 @@ import {arrayToObject, extractDuplicates} from '@augment-vir/common';
 import {arcadePhysicsExperiment} from '@evir/driving-arcade-physics';
 import {type DrivingExperiment} from '@evir/driving-core';
 import {flatPlaneExperiment} from '@evir/driving-flat-plane';
+import {garageExperiment} from '@evir/driving-garage';
 import {tiresAndGearsExperiment} from '@evir/driving-tires-and-gears';
 
 export const allExperiments: ReadonlyArray<DrivingExperiment> = [
     flatPlaneExperiment,
     tiresAndGearsExperiment,
     arcadePhysicsExperiment,
+    garageExperiment,
 ];
 
 export const allExperimentsByPathId = arrayToObject(allExperiments, (experiment) => {
