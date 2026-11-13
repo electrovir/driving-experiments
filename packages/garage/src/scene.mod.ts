@@ -752,6 +752,8 @@ export function createGarageSceneMod() {
 
             if (state.routeRun) {
                 updateRouteMarkers({
+                    carSpeed: Math.abs(state.vehicleView?.forwardSpeed ?? 0),
+                    dtSeconds,
                     markers: runtime.scene.routeMarkers,
                     run: state.routeRun,
                 });

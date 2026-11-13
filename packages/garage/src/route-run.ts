@@ -1,4 +1,5 @@
-import {type GroundPoint} from '@evir/driving-common/src/track-layout.js';
+import {assertWrap} from '@augment-vir/assert';
+import {getUnitDirection, type GroundPoint} from '@evir/driving-common/src/track-layout.js';
 import {
     findNearestRoutePoint,
     getDistance,
@@ -80,6 +81,8 @@ const segmentsAhead = {
 } satisfies Record<RouteRunPhase.Driving | RouteRunPhase.OffRoute, number>;
 /** Segments checked behind the car's progress, for a car that backs up a little. */
 const segmentsBehind = 2;
+/** Turns sharper than this angle's cosine are hairpins, where a corner's halfway line is useless. */
+const hairpinCosine = Math.cos((Math.PI * 2) / 3);
 
 /** A spot on a route: a segment, from this point to the next, and how far along it from 0 to 1. */
 export type RouteSpot = {
@@ -92,7 +95,7 @@ export type RouteSpot = {
  *
  * Annotated because it's recursive.
  */
-function advanceAlongRoute({
+export function advanceAlongRoute({
     distance,
     from,
     route,
@@ -148,22 +151,64 @@ export function getRouteAhead({
         },
         route: run.route,
     });
-    const start = run.route[spot.segmentIndex];
-    const end = run.route[spot.segmentIndex + 1];
 
     return {
-        points:
-            start && end
-                ? [
-                      {
-                          x: start.x + (end.x - start.x) * spot.fraction,
-                          z: start.z + (end.z - start.z) * spot.fraction,
-                      },
-                      ...run.route.slice(spot.segmentIndex + 1),
-                  ]
-                : run.route.slice(spot.segmentIndex),
+        points: getRouteFrom({
+            route: run.route,
+            spot,
+        }),
         spot,
     };
+}
+
+/** The route from `spot` to the destination. */
+export function getRouteFrom({
+    route,
+    spot,
+}: Readonly<{
+    route: ReadonlyArray<Readonly<RoutePoint>>;
+    spot: Readonly<RouteSpot>;
+}>) {
+    const start = route[spot.segmentIndex];
+    const end = route[spot.segmentIndex + 1];
+
+    return start && end
+        ? [
+              {
+                  x: start.x + (end.x - start.x) * spot.fraction,
+                  z: start.z + (end.z - start.z) * spot.fraction,
+              },
+              ...route.slice(spot.segmentIndex + 1),
+          ]
+        : route.slice(spot.segmentIndex);
+}
+
+/** Meters by road from `from` to `to`. Only meaningful when `to` is at or past `from`. */
+export function getRouteGap({
+    from,
+    route,
+    to,
+}: Readonly<{
+    route: ReadonlyArray<Readonly<GroundPoint>>;
+    from: Readonly<RouteSpot>;
+    to: Readonly<RouteSpot>;
+}>) {
+    const lengths = route.slice(from.segmentIndex, to.segmentIndex + 1).map((start, offset) => {
+        const end = route[from.segmentIndex + offset + 1];
+
+        return end
+            ? getDistance({
+                  from: start,
+                  to: end,
+              })
+            : 0;
+    });
+
+    return (
+        lengths.reduce((total, length) => total + length, 0) -
+        (lengths[0] ?? 0) * from.fraction -
+        (lengths.at(-1) ?? 0) * (1 - to.fraction)
+    );
 }
 
 /** Where the run ends. Undefined while no run is going. */
@@ -331,22 +376,62 @@ function planNextRoute({
     };
 }
 
-/** How far `point` is from the segment and how far along it its nearest spot is, from 0 to 1. */
-function measureSegment({
-    end,
-    point,
-    start,
+/**
+ * The direction the route runs at a segment's end, halfway between the segment's own `direction`
+ * and the neighboring segment's, so the line across the road there splits the corner in half.
+ */
+function getCornerTangent({
+    direction,
+    neighbor,
 }: Readonly<{
-    start: Readonly<GroundPoint>;
-    end: Readonly<GroundPoint>;
+    direction: Readonly<GroundPoint>;
+    /** Undefined at the route's ends. */
+    neighbor: Readonly<GroundPoint> | undefined;
+}>) {
+    /**
+     * At a hairpin the halfway line runs nearly along the road, cutting the segment's approach in
+     * half lengthwise, and at a U-turn it doesn't exist.
+     */
+    return !neighbor || direction.x * neighbor.x + direction.z * neighbor.z < hairpinCosine
+        ? direction
+        : getUnitDirection({
+              from: {
+                  x: 0,
+                  z: 0,
+              },
+              to: {
+                  x: direction.x + neighbor.x,
+                  z: direction.z + neighbor.z,
+              },
+          });
+}
+
+/**
+ * How far `point` is from the route's segment starting at `segmentIndex`, and how far along the
+ * segment it is from 0 to 1.
+ *
+ * Along is measured between the lines across the road at each end, which split each corner in half,
+ * rather than by the segment's nearest spot. The nearest spot stalls at a corner while the car cuts
+ * across its inside and then jumps to the next segment; between the corner lines, the next segment
+ * picks up exactly where this one leaves off.
+ */
+function measureSegment({
+    point,
+    route,
+    segmentIndex,
+}: Readonly<{
+    route: ReadonlyArray<Readonly<GroundPoint>>;
+    segmentIndex: number;
     point: Readonly<GroundPoint>;
 }>) {
+    const start = assertWrap.isDefined(route[segmentIndex]);
+    const end = assertWrap.isDefined(route[segmentIndex + 1]);
     const segment = {
         x: end.x - start.x,
         z: end.z - start.z,
     };
     const lengthSquared = segment.x ** 2 + segment.z ** 2;
-    const fraction = lengthSquared
+    const nearestFraction = lengthSquared
         ? Math.min(
               1,
               Math.max(
@@ -356,16 +441,47 @@ function measureSegment({
               ),
           )
         : 0;
+    const direction = getUnitDirection({
+        from: start,
+        to: end,
+    });
+    const before = route[segmentIndex - 1];
+    const after = route[segmentIndex + 2];
+    const startTangent = getCornerTangent({
+        direction,
+        neighbor: before
+            ? getUnitDirection({
+                  from: before,
+                  to: start,
+              })
+            : undefined,
+    });
+    const endTangent = getCornerTangent({
+        direction,
+        neighbor: after
+            ? getUnitDirection({
+                  from: end,
+                  to: after,
+              })
+            : undefined,
+    });
+    const pastStart = (point.x - start.x) * startTangent.x + (point.z - start.z) * startTangent.z;
+    const pastEnd = (point.x - end.x) * endTangent.x + (point.z - end.z) * endTangent.z;
 
     return {
         distance: getDistance({
             from: point,
             to: {
-                x: start.x + segment.x * fraction,
-                z: start.z + segment.z * fraction,
+                x: start.x + segment.x * nearestFraction,
+                z: start.z + segment.z * nearestFraction,
             },
         }),
-        fraction,
+        fraction:
+            pastStart > pastEnd
+                ? Math.min(1, Math.max(0, pastStart / (pastStart - pastEnd)))
+                : nearestFraction,
+        /** Whether `point` is between the corner lines at the segment's two ends. */
+        isBetweenEnds: pastStart >= 0 && pastEnd <= 0,
     };
 }
 
@@ -392,7 +508,7 @@ function findRouteSegment({
     return route
         .slice(firstIndex, lastIndex + 1)
         .reduce<
-            {distance: number; segmentIndex: number; fraction: number} | undefined
+            (ReturnType<typeof measureSegment> & {segmentIndex: number}) | undefined
         >((best, start, offset) => {
             const end = route[firstIndex + offset + 1];
 
@@ -400,17 +516,23 @@ function findRouteSegment({
                 return best;
             }
 
-            const {distance, fraction} = measureSegment({
-                end,
+            const measured = measureSegment({
                 point,
-                start,
+                route,
+                segmentIndex: firstIndex + offset,
             });
-            const isOnRoad = distance <= Math.max(start.halfWidth, end.halfWidth) + sidewalkWidth;
+            const isOnRoad =
+                measured.distance <= Math.max(start.halfWidth, end.halfWidth) + sidewalkWidth;
+            /** Inside a corner, the car is near both segments, but between the ends of only one. */
+            const isBetter =
+                !best ||
+                (measured.isBetweenEnds === best.isBetweenEnds
+                    ? measured.distance < best.distance
+                    : measured.isBetweenEnds);
 
-            return isOnRoad && (!best || distance < best.distance)
+            return isOnRoad && isBetter
                 ? {
-                      distance,
-                      fraction,
+                      ...measured,
                       segmentIndex: firstIndex + offset,
                   }
                 : best;

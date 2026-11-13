@@ -2,8 +2,11 @@ import {getTrackRights, type GroundPoint} from '@evir/driving-common/src/track-l
 import {createStrip} from '@evir/driving-common/src/track-mesh.js';
 import {Container3D, CylinderGeometry, Material3D, Mesh3D} from '@pixi/3d';
 import {
+    advanceAlongRoute,
     getRouteAhead,
     getRouteDestination,
+    getRouteFrom,
+    getRouteGap,
     RouteRunPhase,
     type RoutePoint,
     type RouteRun,
@@ -20,6 +23,12 @@ const lineHeight = 0.05;
 
 /** Meters past the car's center that the line starts, so it ends just ahead of the car's nose. */
 const lineLead = 6;
+/**
+ * Meters per second faster than the car that the line's start catches up to where it should be. The
+ * start jumps ahead when the car cuts the inside of a sharp corner, which is shorter than the
+ * route.
+ */
+const lineCatchUpSpeed = 15;
 
 function createLineGeometry({
     points,
@@ -154,9 +163,17 @@ export type RouteMarkers = ReturnType<typeof createRouteMarkers>;
 
 /** Shows the route still ahead while a run is going, and hides the markers otherwise. */
 export function updateRouteMarkers({
+    carSpeed,
+    dtSeconds,
     markers,
     run,
-}: Readonly<{markers: RouteMarkers; run: Readonly<RouteRun>}>) {
+}: Readonly<{
+    markers: RouteMarkers;
+    run: Readonly<RouteRun>;
+    /** Meters per second, either way. */
+    carSpeed: number;
+    dtSeconds: number;
+}>) {
     const isGoing = run.phase === RouteRunPhase.Driving || run.phase === RouteRunPhase.OffRoute;
     const destination = isGoing ? getRouteDestination(run) : undefined;
 
@@ -170,20 +187,38 @@ export function updateRouteMarkers({
         return;
     }
 
-    const ahead = getRouteAhead({
+    const target = getRouteAhead({
         leadDistance: lineLead,
         run,
-    });
+    }).spot;
     const source = markers.lineSource;
     const isSameRoute = source?.route === run.route;
+    const catchUp = (carSpeed + lineCatchUpSpeed) * dtSeconds;
+    const spot =
+        isSameRoute &&
+        getRouteGap({
+            from: source.spot,
+            route: run.route,
+            to: target,
+        }) > catchUp
+            ? advanceAlongRoute({
+                  distance: catchUp,
+                  from: source.spot,
+                  route: run.route,
+              })
+            : target;
+    const points = getRouteFrom({
+        route: run.route,
+        spot,
+    });
 
-    markers.line.visible = ahead.points.length > 1;
+    markers.line.visible = points.length > 1;
 
     if (
         !markers.line.visible ||
         (isSameRoute &&
-            source.spot.segmentIndex === ahead.spot.segmentIndex &&
-            source.spot.fraction === ahead.spot.fraction)
+            source.spot.segmentIndex === spot.segmentIndex &&
+            source.spot.fraction === spot.fraction)
     ) {
         return;
     }
@@ -197,16 +232,16 @@ export function updateRouteMarkers({
     const previous = markers.line.geometry;
 
     markers.line.geometry = createLineGeometry({
-        points: ahead.points,
+        points,
         rights: getLineRights({
             routeRights,
-            spot: ahead.spot,
+            spot,
         }),
     });
     previous.destroy();
     markers.lineSource = {
         route: run.route,
         routeRights,
-        spot: ahead.spot,
+        spot,
     };
 }

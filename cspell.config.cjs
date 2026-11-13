@@ -4,6 +4,7 @@ module.exports = {
     ...baseConfig,
     ignorePaths: [
         ...baseConfig.ignorePaths,
+        '**/LICENSE-SHIFT',
     ],
     words: [
         ...baseConfig.words,
