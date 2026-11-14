@@ -2,6 +2,7 @@ import {createArray, mapObjectValues} from '@augment-vir/common';
 import {
     addAccelerations,
     getAccelerationAtPoint,
+    getImpulseResistance,
     getPointVelocity,
     getWorldPoint,
     noAcceleration,
@@ -30,6 +31,11 @@ const skirtSpacing = 0.5;
 const skirtStiffness = 300;
 /** Push against each meter per second a point presses further in. */
 const skirtDamping = 20;
+/**
+ * How many times over the damping may stop a point's press in one step. Above one, a hard landing
+ * on a corner still bounces the car into a tumble.
+ */
+const skirtOvershoot = 3;
 /** Drag along the ground, as a share of the push. */
 const skirtFriction = 0.4;
 
@@ -112,7 +118,8 @@ const skirtPoints = mapObjectValues(carPresets, (preset, tuning) => {
 
 /**
  * Pushes the underside's edges up and back wherever the ground rises into them, like a bumper or
- * fender flexing as it scrapes over a curb.
+ * fender flexing as it scrapes over a curb. Also returns where each pressed point touches the
+ * ground, so the scrape can still throw sparks.
  */
 export function getSkirtAcceleration({
     body,
@@ -128,7 +135,7 @@ export function getSkirtAcceleration({
     dtSeconds: number;
 }>) {
     const points = skirtPoints[preset];
-    const pushes = points.flatMap((localPoint) => {
+    const pressed = points.flatMap((localPoint) => {
         const point = getWorldPoint({
             body,
             localPoint,
@@ -142,16 +149,43 @@ export function getSkirtAcceleration({
         });
         const depth = Math.min(ground.height - point.y, skirtHeight);
 
-        if (depth <= 0) {
-            return [];
-        }
-
+        return depth > 0
+            ? [
+                  {
+                      depth,
+                      ground,
+                      point,
+                  },
+              ]
+            : [];
+    });
+    const pushes = pressed.map(({depth, ground, point}) => {
         const velocity = getPointVelocity(body, point);
         const pressSpeed = -dotVectors({
             left: velocity,
             right: ground.normal,
         });
-        const push = Math.max(0, skirtStiffness * depth + skirtDamping * pressSpeed);
+        /**
+         * Capped at a few times what stops the press this step, split across every pressed point. A
+         * corner far from the center of mass, like the nose hitting a ramp, takes little push to
+         * move, so the full damping overshoots and launches the car.
+         */
+        const damping = Math.min(
+            skirtDamping * pressSpeed,
+            (skirtOvershoot * pressSpeed) /
+                dtSeconds /
+                pressed.length /
+                getImpulseResistance({
+                    body,
+                    direction: ground.normal,
+                    offset: subtractVectors({
+                        left: point,
+                        right: body.centerOfMass,
+                    }),
+                    shape,
+                }),
+        );
+        const push = Math.max(0, skirtStiffness * depth + damping);
         const slide = projectOnPlane({
             normal: ground.normal,
             vector: velocity,
@@ -160,18 +194,24 @@ export function getSkirtAcceleration({
         /** Never more than stops the slide this step, split across every pressed point. */
         const drag = Math.min(skirtFriction * push, slideSpeed / dtSeconds / points.length);
 
-        return [
-            getAccelerationAtPoint({
-                body,
-                force: subtractVectors({
-                    left: scaleVector(ground.normal, push),
-                    right: slideSpeed ? scaleVector(slide, drag / slideSpeed) : slide,
-                }),
-                point,
-                shape,
+        return getAccelerationAtPoint({
+            body,
+            force: subtractVectors({
+                left: scaleVector(ground.normal, push),
+                right: slideSpeed ? scaleVector(slide, drag / slideSpeed) : slide,
             }),
-        ];
+            point,
+            shape,
+        });
     });
 
-    return pushes.length ? addAccelerations(...pushes) : noAcceleration;
+    return {
+        acceleration: pushes.length ? addAccelerations(...pushes) : noAcceleration,
+        contacts: pressed.map(({ground, point}) => {
+            return {
+                normal: ground.normal,
+                point,
+            };
+        }),
+    };
 }

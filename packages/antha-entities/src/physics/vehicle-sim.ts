@@ -27,6 +27,7 @@ import {createHoverPadState, getHoverDrive, stepHoverPad, type HoverPadState} fr
 import {
     addAccelerations,
     createBodyShape,
+    getPointVelocity,
     getWorldPoint,
     gravity,
     integratePosition,
@@ -714,18 +715,19 @@ export function accelerateVehicle({
                   }),
               ]
             : [];
+    const skirt = getSkirtAcceleration({
+        body: vehicle.body,
+        dtSeconds,
+        preset: vehicle.preset,
+        shape: vehicle.shape,
+        world,
+    });
     const accelerated = integrateVelocity({
         acceleration: addAccelerations(
             ...powered.accelerations,
             assist,
             ...flip,
-            getSkirtAcceleration({
-                body: vehicle.body,
-                dtSeconds,
-                preset: vehicle.preset,
-                shape: vehicle.shape,
-                world,
-            }),
+            skirt.acceleration,
             {
                 angular: zeroVector,
                 linear: addVectors(
@@ -775,12 +777,25 @@ export function accelerateVehicle({
         contacts: powered.contacts,
         shape: vehicle.shape,
     });
+    const scraped = skirt.contacts.reduce(
+        (hitVehicle, contact) => {
+            return applyHit({
+                contact,
+                hitVelocity: scaleVector(getPointVelocity(vehicle.body, contact.point), -1),
+                vehicle: hitVehicle,
+            });
+        },
+        {
+            ...vehicle,
+            hitCooldownSeconds: Math.max(0, vehicle.hitCooldownSeconds - dtSeconds),
+        },
+    );
+
     return {
-        ...vehicle,
+        ...scraped,
         ...powered.parts,
         body: resolved,
         burnout: driver.burnout,
-        hitCooldownSeconds: Math.max(0, vehicle.hitCooldownSeconds - dtSeconds),
         isBoosting: driver.isBoosting,
         isReversing: driver.isReversing,
         pads: powered.pads,

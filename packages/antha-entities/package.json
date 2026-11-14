@@ -24,6 +24,7 @@
         "@antha/graphics-3d": "^0.29.1",
         "@antha/input": "^0.29.1",
         "@antha/util": "^0.29.1",
+        "@augment-vir/assert": "^32.7.0",
         "@augment-vir/common": "^32.7.0",
         "@electrovir/color": "^2.0.0",
         "@evir/driving-common": "*",
@@ -37,7 +38,6 @@
         "vira": "^33.18.0"
     },
     "devDependencies": {
-        "@augment-vir/assert": "^32.7.0",
         "@augment-vir/test": "^32.7.0",
         "@web/dev-server-esbuild": "^2.0.0",
         "@web/test-runner": "^1.0.0",
