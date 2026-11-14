@@ -1,0 +1,50 @@
+{
+    "name": "@evir/driving-antha-entities",
+    "version": "0.0.0",
+    "private": true,
+    "license": "(MIT OR CC0-1.0)",
+    "sideEffects": false,
+    "type": "module",
+    "main": "src/index.ts",
+    "module": "src/index.ts",
+    "types": "src/index.ts",
+    "scripts": {
+        "compile": "virmator compile",
+        "test": "virmator test web",
+        "test:coverage": "npm test"
+    },
+    "dependencies": {
+        "@antha/asset": "^0.29.1",
+        "@antha/audio": "^0.29.1",
+        "@antha/engine": "^0.29.1",
+        "@antha/entity-3d": "^0.29.1",
+        "@antha/entity-core": "^0.29.1",
+        "@antha/gamepad-type": "^0.29.1",
+        "@antha/graphics-2d": "^0.29.1",
+        "@antha/graphics-3d": "^0.29.1",
+        "@antha/input": "^0.29.1",
+        "@antha/util": "^0.29.1",
+        "@augment-vir/common": "^32.7.0",
+        "@electrovir/color": "^2.0.0",
+        "@evir/driving-common": "*",
+        "@evir/driving-core": "*",
+        "@pixi/3d": "^0.1.0",
+        "date-vir": "^9.4.1",
+        "element-vir": "^27.0.2",
+        "object-shape-tester": "^6.15.3",
+        "pixi.js": "^8.23.0",
+        "typed-event-target": "^4.3.4",
+        "vira": "^33.18.0"
+    },
+    "devDependencies": {
+        "@augment-vir/assert": "^32.7.0",
+        "@augment-vir/test": "^32.7.0",
+        "@web/dev-server-esbuild": "^2.0.0",
+        "@web/test-runner": "^1.0.0",
+        "@web/test-runner-playwright": "^1.0.0",
+        "istanbul-smart-text-reporter": "^1.1.5"
+    },
+    "engines": {
+        "node": ">=22"
+    }
+}

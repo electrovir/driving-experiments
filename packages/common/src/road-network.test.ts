@@ -4,6 +4,7 @@ import {describe, it} from '@augment-vir/test';
 import {
     boundaryHalfWidth,
     createRoadSurface,
+    roadHeight,
     roadObstacleProfiles,
     RoadObstacleType,
 } from './road-network.js';
@@ -58,7 +59,7 @@ describe(createRoadSurface.name, () => {
             z: -4,
         });
 
-        assert.isAbove(approaching.height, 0);
+        assert.isAbove(approaching.height, roadHeight);
         assert.isAbove(
             getContact({
                 x: 70,
@@ -79,7 +80,7 @@ describe(createRoadSurface.name, () => {
                 }).height,
             ],
             [
-                0,
+                roadHeight,
                 0.15,
             ],
         );
@@ -98,7 +99,7 @@ describe(createRoadSurface.name, () => {
                 }).height;
             }),
             [
-                0,
+                roadHeight,
                 0.15,
                 0,
             ],
@@ -255,7 +256,7 @@ describe('ramps', () => {
             ),
             [5],
         );
-        assert.strictEquals(Math.max(...edges.map(({start}) => start.y)), 1.2);
+        assert.strictEquals(Math.max(...edges.map(({start}) => start.y)), roadHeight + 1.2);
     });
 });
 

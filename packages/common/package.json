@@ -14,15 +14,15 @@
         "test:coverage": "npm test"
     },
     "dependencies": {
-        "@antha/engine": "^0.28.0",
-        "@antha/gamepad-type": "^0.28.0",
-        "@antha/input": "^0.28.0",
-        "@antha/util": "^0.28.0",
+        "@antha/engine": "^0.29.1",
+        "@antha/gamepad-type": "^0.29.1",
+        "@antha/input": "^0.29.1",
+        "@antha/util": "^0.29.1",
         "@augment-vir/common": "^32.7.0",
-        "@pixi/3d": "file:../../.not-committed/pixi-3d-0.1.0-beta.2.tgz",
+        "@pixi/3d": "^0.1.0",
         "date-vir": "^9.4.1",
         "element-vir": "^27.0.2",
-        "pixi.js": "^8.22.0"
+        "pixi.js": "^8.23.0"
     },
     "devDependencies": {
         "@augment-vir/assert": "^32.7.0",

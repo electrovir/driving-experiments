@@ -3,6 +3,8 @@ import {getUnitDirection, sampleTrack, type GroundPoint, type TrackLayout} from 
 
 export enum RoadObstacleType {
     SpeedBump = 'speed-bump',
+    /** A speed bump low enough for a car's body to clear without its wheels lifting it. */
+    LowSpeedBump = 'low-speed-bump',
     /** A jump: a short climb, a flat top, and a longer slope down to land on. */
     Ramp = 'ramp',
     /** A peaked ramp whose crest bends too sharply for a car's floor to clear, so it scrapes over. */
@@ -16,6 +18,7 @@ export enum RoadObstacleType {
  */
 export const roadObstacleListKeys = {
     [RoadObstacleType.SpeedBump]: 'speedBumps',
+    [RoadObstacleType.LowSpeedBump]: 'lowSpeedBumps',
     [RoadObstacleType.Ramp]: 'ramps',
     [RoadObstacleType.SteepRamp]: 'steepRamps',
 } as const satisfies Record<RoadObstacleType, string>;
@@ -64,8 +67,12 @@ export type RoadObstacleProfile = {
  */
 export const boundaryHalfWidth = 345;
 
+/** Meters the road's surface sits above the grass. */
+export const roadHeight = 0.02;
 /** Meters a speed bump rises above the road. */
 const speedBumpHeight = 0.2;
+/** Meters a {@link RoadObstacleType.LowSpeedBump} rises above the road. */
+const lowSpeedBumpHeight = 0.2;
 const speedBumpHalfLength = 0.6;
 /** Pieces of a speed bump's outline, so its curve looks smooth. */
 const speedBumpSlices = 8;
@@ -110,18 +117,24 @@ function createRampProfile({
     };
 }
 
-export const roadObstacleProfiles: Readonly<Record<RoadObstacleType, RoadObstacleProfile>> = {
-    [RoadObstacleType.SpeedBump]: {
+/** A rounded speed bump rising `height` meters above the road. */
+function createSpeedBumpProfile(height: number): RoadObstacleProfile {
+    return {
         getHeight(offset) {
             return Math.abs(offset) >= speedBumpHalfLength
                 ? 0
-                : (speedBumpHeight * (1 + Math.cos((Math.PI * offset) / speedBumpHalfLength))) / 2;
+                : (height * (1 + Math.cos((Math.PI * offset) / speedBumpHalfLength))) / 2;
         },
         halfLength: speedBumpHalfLength,
         outlineOffsets: createArray(speedBumpSlices + 1, (index) => {
             return speedBumpHalfLength * ((2 * index) / speedBumpSlices - 1);
         }),
-    },
+    };
+}
+
+export const roadObstacleProfiles: Readonly<Record<RoadObstacleType, RoadObstacleProfile>> = {
+    [RoadObstacleType.SpeedBump]: createSpeedBumpProfile(speedBumpHeight),
+    [RoadObstacleType.LowSpeedBump]: createSpeedBumpProfile(lowSpeedBumpHeight),
     [RoadObstacleType.Ramp]: createRampProfile({
         climb: 5,
         descent: 8,
@@ -149,7 +162,7 @@ function getObstacleEdges({along, center, halfWidth, type}: Readonly<RoadObstacl
     function getCorner({across, offset}: Readonly<Record<'across' | 'offset', number>>) {
         return {
             x: center.x + along.x * offset - along.z * across,
-            y: profile.getHeight(offset),
+            y: roadHeight + profile.getHeight(offset),
             z: center.z + along.z * offset + along.x * across,
         };
     }
@@ -254,6 +267,8 @@ export type RoadEdge = {
 const cellSize = 16;
 /** Meters beyond the sidewalks that a lookup still finds a road from. */
 const lookupMargin = 2;
+/** Meters past a road's edge to check whether another road paves over the curb there. */
+const curbProbeDistance = 0.01;
 
 function getCellKey({cellX, cellZ}: Readonly<Record<'cellX' | 'cellZ', number>>) {
     return `${cellX},${cellZ}`;
@@ -492,6 +507,19 @@ export function createRoadSurface(network: Readonly<RoadNetwork>) {
         /** Meters from the wheel's center out to the nearest sidewalk edge below it. */
         const gap = edge.distance <= 0 ? -edge.distance : edge.distance - network.sidewalkWidth;
         const sink = radius - Math.sqrt(Math.max(0, radius ** 2 - gap ** 2));
+        const baseHeight = edge.distance <= 0 ? roadHeight : 0;
+        /** Away from the sidewalk: inward on the road, outward on the grass. */
+        const away = edge.distance <= 0 ? -1 : 1;
+        /**
+         * Another road can pave over this road's sidewalk where the two meet, and then there's no
+         * curb there, which matches where the drawn sidewalks stop.
+         */
+        const isCurbPaved =
+            gap < radius &&
+            getRoadEdge({
+                x: point.x - edge.outward.x * away * (gap + curbProbeDistance),
+                z: point.z - edge.outward.z * away * (gap + curbProbeDistance),
+            }).distance <= 0;
 
         if (isOnSidewalk) {
             return {
@@ -501,9 +529,9 @@ export function createRoadSurface(network: Readonly<RoadNetwork>) {
                     z: 0,
                 },
             };
-        } else if (gap >= radius || sink >= network.curbHeight) {
+        } else if (gap >= radius || isCurbPaved || sink >= network.curbHeight - baseHeight) {
             return {
-                height: 0,
+                height: baseHeight,
                 push: {
                     x: 0,
                     z: 0,
@@ -511,8 +539,6 @@ export function createRoadSurface(network: Readonly<RoadNetwork>) {
             };
         }
 
-        /** Away from the sidewalk: inward on the road, outward on the grass. */
-        const away = edge.distance <= 0 ? -1 : 1;
         const slope = gap / (radius - sink);
 
         return {
@@ -551,7 +577,8 @@ export function createRoadSurface(network: Readonly<RoadNetwork>) {
                     const rise = Math.sqrt(radius ** 2 - treadOffset ** 2);
 
                     return {
-                        height: profile.getHeight(along + treadOffset) - (radius - rise),
+                        height:
+                            roadHeight + profile.getHeight(along + treadOffset) - (radius - rise),
                         slope: treadOffset / rise,
                     };
                 }).reduce((best, sample) => (sample.height > best.height ? sample : best));

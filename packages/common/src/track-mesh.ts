@@ -2,6 +2,7 @@ import {createArray, getEnumValues} from '@augment-vir/common';
 import {Container3D, Geometry3D, Material3D, Mesh3D, PlaneGeometry} from '@pixi/3d';
 import {
     createRoadSurface,
+    roadHeight,
     roadObstacleProfiles,
     RoadObstacleType,
     type RoadNetwork,
@@ -16,7 +17,7 @@ const startLineDepth = 1;
  * flicker against each other.
  */
 const layerHeight = {
-    road: 0.02,
+    road: roadHeight,
     marking: 0.03,
 };
 const asphaltMaterialOptions = {
@@ -186,10 +187,49 @@ type Vertex = {
 type Polygon = {
     corners: Vertex[];
     normal: Vertex;
+    /** One lit direction per corner, in place of `normal`, so a curved surface shades smoothly. */
+    cornerNormals?: Vertex[] | undefined;
 };
 
+/**
+ * The polygon with its corners running counterclockwise when seen from the side `normal` points to.
+ * Pixi treats a polygon wound the other way as its back face, and a double sided material then
+ * lights it and looks up its shadow with `normal` flipped.
+ */
+function windTowardNormal(polygon: Readonly<Polygon>): Readonly<Polygon> {
+    /** Newell's method, which still works once clipping leaves a sliver or repeated corner. */
+    const windingNormal = polygon.corners.reduce(
+        (sum, corner, index) => {
+            const next = polygon.corners[(index + 1) % polygon.corners.length] ?? corner;
+
+            return {
+                x: sum.x + (corner.y - next.y) * (corner.z + next.z),
+                y: sum.y + (corner.z - next.z) * (corner.x + next.x),
+                z: sum.z + (corner.x - next.x) * (corner.y + next.y),
+            };
+        },
+        {
+            x: 0,
+            y: 0,
+            z: 0,
+        },
+    );
+    const alignment =
+        windingNormal.x * polygon.normal.x +
+        windingNormal.y * polygon.normal.y +
+        windingNormal.z * polygon.normal.z;
+
+    return alignment < 0
+        ? {
+              ...polygon,
+              cornerNormals: polygon.cornerNormals?.toReversed(),
+              corners: polygon.corners.toReversed(),
+          }
+        : polygon;
+}
+
 function createPolygonGeometry(polygons: ReadonlyArray<Readonly<Polygon>>) {
-    const triangles = polygons.flatMap(({corners, normal}) => {
+    const triangles = polygons.map(windTowardNormal).flatMap(({cornerNormals, corners, normal}) => {
         const [
             first,
             ...rest
@@ -207,7 +247,11 @@ function createPolygonGeometry(polygons: ReadonlyArray<Readonly<Polygon>>) {
                                     corner,
                                     next,
                                 ],
-                                normal,
+                                normals: [
+                                    cornerNormals?.[0] ?? normal,
+                                    cornerNormals?.[index + 1] ?? normal,
+                                    cornerNormals?.[index + 2] ?? normal,
+                                ],
                             },
                         ]
                       : [];
@@ -218,8 +262,8 @@ function createPolygonGeometry(polygons: ReadonlyArray<Readonly<Polygon>>) {
     return new Geometry3D({
         indices: new Uint32Array(createArray(triangles.length * 3, (index) => index)),
         normals: new Float32Array(
-            triangles.flatMap(({corners, normal}) => {
-                return corners.flatMap(() => {
+            triangles.flatMap(({normals}) => {
+                return normals.flatMap((normal) => {
                     return [
                         normal.x,
                         normal.y,
@@ -248,7 +292,7 @@ function createPolygonGeometry(polygons: ReadonlyArray<Readonly<Polygon>>) {
  */
 function clipPolygon<T extends Readonly<Polygon>>(
     polygon: T,
-    getSide: (corner: Readonly<Vertex>) => number,
+    getSide: (corner: Readonly<Vertex>, index: number) => number,
 ): T {
     const sides = polygon.corners.map(getSide);
 
@@ -294,7 +338,7 @@ function clipPolygon<T extends Readonly<Polygon>>(
     };
 }
 
-enum RoadSurfaceLayer {
+export enum RoadSurfaceLayer {
     Asphalt = 'asphalt',
     Paint = 'paint',
     Curb = 'curb',
@@ -305,6 +349,7 @@ enum RoadSurfaceLayer {
 
 const obstacleSurfaces: Readonly<Record<RoadObstacleType, RoadSurfaceLayer>> = {
     [RoadObstacleType.SpeedBump]: RoadSurfaceLayer.SpeedBump,
+    [RoadObstacleType.LowSpeedBump]: RoadSurfaceLayer.SpeedBump,
     [RoadObstacleType.Ramp]: RoadSurfaceLayer.Ramp,
     [RoadObstacleType.SteepRamp]: RoadSurfaceLayer.Ramp,
 };
@@ -331,12 +376,29 @@ function getObstaclePolygons({along, center, halfWidth, type}: Readonly<RoadObst
         };
     }
 
+    function getSurfaceNormal(slope: number): Vertex {
+        const normalLength = Math.hypot(slope, 1);
+
+        return {
+            x: (-along.x * slope) / normalLength,
+            y: 1 / normalLength,
+            z: (-along.z * slope) / normalLength,
+        };
+    }
+
     return profile.outlineOffsets.slice(1).flatMap((end, index) => {
         const start = profile.outlineOffsets[index] ?? end;
         const startHeight = profile.getHeight(start);
         const endHeight = profile.getHeight(end);
-        const slope = (endHeight - startHeight) / (end - start);
-        const normalLength = Math.hypot(slope, 1);
+        /**
+         * Each edge takes the profile's slope just inside this strip, so a curved bump shades
+         * smoothly across strips while a ramp's straight slopes keep their sharp creases.
+         */
+        const nudge = (end - start) / 1000;
+        const startNormal = getSurfaceNormal(
+            (profile.getHeight(start + nudge) - startHeight) / nudge,
+        );
+        const endNormal = getSurfaceNormal((endHeight - profile.getHeight(end - nudge)) / nudge);
         const top = {
             corners: [
                 getCorner({
@@ -360,11 +422,13 @@ function getObstaclePolygons({along, center, halfWidth, type}: Readonly<RoadObst
                     rightOffset: halfWidth,
                 }),
             ],
-            normal: {
-                x: (-along.x * slope) / normalLength,
-                y: 1 / normalLength,
-                z: (-along.z * slope) / normalLength,
-            },
+            cornerNormals: [
+                startNormal,
+                endNormal,
+                endNormal,
+                startNormal,
+            ],
+            normal: getSurfaceNormal((endHeight - startHeight) / (end - start)),
             surface,
         } satisfies Polygon & {surface: RoadSurfaceLayer};
         const sides = [
@@ -415,6 +479,10 @@ function getObstaclePolygons({along, center, halfWidth, type}: Readonly<RoadObst
  * closely on small pieces.
  */
 const sidewalkPieceWidth = 1;
+/** Meters of rounding on a curb's top edge, which sticks out past the sidewalk's edge. */
+const curbRadius = 0.05;
+/** Pieces of a curb's rounded edge, so its curve looks smooth. */
+const curbSlices = 4;
 /** Meters past a curb face to look for what lies beyond it. */
 const edgeProbe = 0.1;
 
@@ -550,42 +618,103 @@ function getRoadPolygons({
             } satisfies Polygon & {surface: RoadSurfaceLayer};
         }
 
-        /** An upright piece at an offset right of the center line, facing `facing` (1 is right). */
-        function getUprightPolygon({
+        /**
+         * Points up a curb's face from its foot, with its top edge rounded over onto the sidewalk
+         * edge at `edgeOffset`. `angle` tilts each point's normal from `facing` (1 is right) up
+         * toward the sky.
+         */
+        function getCurbProfile({
+            baseHeight,
+            edgeOffset,
             facing,
-            offset,
-            surface,
-        }: Readonly<{facing: number; offset: number; surface: RoadSurfaceLayer}>) {
-            return {
-                corners: [
-                    getPoint({
-                        height: 0,
-                        isEnd: false,
-                        offset,
-                    }),
-                    getPoint({
-                        height: 0,
-                        isEnd: true,
-                        offset,
-                    }),
-                    getPoint({
-                        height: curbHeight,
-                        isEnd: true,
-                        offset,
-                    }),
-                    getPoint({
-                        height: curbHeight,
-                        isEnd: false,
-                        offset,
-                    }),
-                ],
-                normal: {
-                    x: ends.start.right.x * facing,
-                    y: 0,
-                    z: ends.start.right.z * facing,
+        }: Readonly<{baseHeight: number; edgeOffset: number; facing: number}>) {
+            return [
+                {
+                    angle: 0,
+                    height: baseHeight,
+                    offset: edgeOffset + facing * curbRadius,
                 },
-                surface,
-            } satisfies Polygon & {surface: RoadSurfaceLayer};
+                ...createArray(curbSlices + 1, (index) => {
+                    const angle = (Math.PI / 2) * (index / curbSlices);
+
+                    return {
+                        angle,
+                        height: curbHeight - curbRadius * (1 - Math.sin(angle)),
+                        offset: edgeOffset + facing * curbRadius * Math.cos(angle),
+                    };
+                }),
+            ];
+        }
+
+        /**
+         * Strips of a curb's face and rounded top edge, clipped by `getSide`. `overhang` is how far
+         * a corner sticks out past the curb's edge, so that two curbs meeting at a corner can be
+         * mitered.
+         */
+        function getCurbPolygons({
+            getSide,
+            ...curb
+        }: Readonly<
+            Parameters<typeof getCurbProfile>[0] & {
+                getSide: (corner: Readonly<Vertex>, overhang: number) => number;
+            }
+        >) {
+            const points = getCurbProfile(curb);
+
+            function getNormal(angle: number): Vertex {
+                return {
+                    x: ends.start.right.x * curb.facing * Math.cos(angle),
+                    y: Math.sin(angle),
+                    z: ends.start.right.z * curb.facing * Math.cos(angle),
+                };
+            }
+
+            return points.slice(1).map((top, index) => {
+                const foot = points[index] ?? top;
+                const overhangs = [
+                    foot,
+                    foot,
+                    top,
+                    top,
+                ].map((point) => curb.facing * (point.offset - curb.edgeOffset));
+
+                const strip = {
+                    cornerNormals: [
+                        getNormal(foot.angle),
+                        getNormal(foot.angle),
+                        getNormal(top.angle),
+                        getNormal(top.angle),
+                    ],
+                    corners: [
+                        getPoint({
+                            height: foot.height,
+                            isEnd: false,
+                            offset: foot.offset,
+                        }),
+                        getPoint({
+                            height: foot.height,
+                            isEnd: true,
+                            offset: foot.offset,
+                        }),
+                        getPoint({
+                            height: top.height,
+                            isEnd: true,
+                            offset: top.offset,
+                        }),
+                        getPoint({
+                            height: top.height,
+                            isEnd: false,
+                            offset: top.offset,
+                        }),
+                    ],
+                    normal: getNormal((foot.angle + top.angle) / 2),
+                    surface: RoadSurfaceLayer.Curb,
+                } satisfies Polygon & {surface: RoadSurfaceLayer};
+
+                return clipPolygon(strip, (corner, cornerIndex) => {
+                    return getSide(corner, overhangs[cornerIndex] ?? 0);
+                });
+            });
         }
 
         const sides = [
@@ -593,16 +722,11 @@ function getRoadPolygons({
             1,
         ].flatMap((side) => {
             const edgeLineCenter = side * (halfWidth - edgeLineWidth / 2);
-            const innerCurb = getUprightPolygon({
-                facing: -side,
-                offset: side * halfWidth,
-                surface: RoadSurfaceLayer.Curb,
-            });
-            const outerCurb = getUprightPolygon({
-                facing: side,
-                offset: side * (halfWidth + sidewalkWidth),
-                surface: RoadSurfaceLayer.Curb,
-            });
+            const toRoad = {
+                x: -side * ends.start.right.x,
+                y: 0,
+                z: -side * ends.start.right.z,
+            };
 
             return [
                 clipPolygon(
@@ -618,11 +742,22 @@ function getRoadPolygons({
                      */
                     (corner) => getOtherRoadDistance(corner) + edgeLineWidth,
                 ),
-                clipPolygon(innerCurb, (corner) => {
-                    return getOtherRoadDistance(corner, {
-                        direction: innerCurb.normal,
-                        probe: -edgeProbe,
-                    });
+                ...getCurbPolygons({
+                    baseHeight: layerHeight.road,
+                    edgeOffset: side * halfWidth,
+                    facing: -side,
+                    /**
+                     * Runs on into the crossing road as far as the lip sticks out, so the lips of
+                     * both roads meet on their corner's diagonal.
+                     */
+                    getSide(corner, overhang) {
+                        return (
+                            getOtherRoadDistance(corner, {
+                                direction: toRoad,
+                                probe: -edgeProbe,
+                            }) + overhang
+                        );
+                    },
                 }),
                 ...createArray(sidewalkPieceCount, (piece) => {
                     return clipPolygon(
@@ -639,15 +774,103 @@ function getRoadPolygons({
                     );
                 }),
                 /** Only stands where grass lies beyond, not another road or its sidewalk. */
-                clipPolygon(outerCurb, (corner) => {
-                    return (
-                        getOtherRoadDistance(corner, {
-                            direction: outerCurb.normal,
-                            probe: edgeProbe,
-                        }) - sidewalkWidth
-                    );
+                ...getCurbPolygons({
+                    baseHeight: 0,
+                    edgeOffset: side * (halfWidth + sidewalkWidth),
+                    facing: side,
+                    getSide(corner) {
+                        return (
+                            getOtherRoadDistance(corner, {
+                                direction: toRoad,
+                                probe: -edgeProbe,
+                            }) - sidewalkWidth
+                        );
+                    },
                 }),
             ];
+        });
+
+        /**
+         * Upright faces closing the curbs and sidewalks where an open road stops, shaped like their
+         * cross section.
+         */
+        const caps = [
+            ...(road.isOpen && index === 0
+                ? [
+                      false,
+                  ]
+                : []),
+            ...(road.isOpen && index === segmentCount - 1
+                ? [
+                      true,
+                  ]
+                : []),
+        ].flatMap((isEnd) => {
+            const {right} = isEnd ? ends.end : ends.start;
+            const outward = {
+                x: isEnd ? -right.z : right.z,
+                y: 0,
+                z: isEnd ? right.x : -right.x,
+            };
+
+            return [
+                -1,
+                1,
+            ].flatMap((side) => {
+                const crossSection = [
+                    ...getCurbProfile({
+                        baseHeight: layerHeight.road,
+                        edgeOffset: side * halfWidth,
+                        facing: -side,
+                    }),
+                    ...getCurbProfile({
+                        baseHeight: 0,
+                        edgeOffset: side * (halfWidth + sidewalkWidth),
+                        facing: side,
+                    }).toReversed(),
+                ];
+
+                return crossSection.slice(1).map((next, pointIndex) => {
+                    const previous = crossSection[pointIndex] ?? next;
+
+                    return clipPolygon(
+                        {
+                            corners: [
+                                getPoint({
+                                    height: 0,
+                                    isEnd,
+                                    offset: previous.offset,
+                                }),
+                                getPoint({
+                                    height: 0,
+                                    isEnd,
+                                    offset: next.offset,
+                                }),
+                                getPoint({
+                                    height: next.height,
+                                    isEnd,
+                                    offset: next.offset,
+                                }),
+                                getPoint({
+                                    height: previous.height,
+                                    isEnd,
+                                    offset: previous.offset,
+                                }),
+                            ],
+                            normal: outward,
+                            surface: RoadSurfaceLayer.Curb,
+                        } satisfies Polygon & {surface: RoadSurfaceLayer},
+                        (corner) => {
+                            return (
+                                getOtherRoadDistance(corner, {
+                                    direction: outward,
+                                    probe: edgeProbe,
+                                }) - sidewalkWidth
+                            );
+                        },
+                    );
+                });
+            });
         });
 
         return [
@@ -658,15 +881,28 @@ function getRoadPolygons({
                 surface: RoadSurfaceLayer.Asphalt,
             }),
             ...sides,
+            ...caps,
         ].filter(({corners}) => corners.length >= 3);
     });
 }
 
+/** Each network's polygons, which take long enough to build that the physics and scene share them. */
+const roadNetworkPolygonCache = new WeakMap<
+    Readonly<RoadNetwork>,
+    ReturnType<typeof getObstaclePolygons>
+>();
+
 /**
- * Every road in the network with its edge lines, curbs, and sidewalks, plus a start line on each
- * looping road. Where roads meet, their surfaces merge without curbs or lines between them.
+ * The flat pieces {@link createRoadNetworkMesh} draws, minus its start lines, in the scene's world
+ * coordinates. Each piece's corners run in order around its edge.
  */
-export function createRoadNetworkMesh(network: Readonly<RoadNetwork>) {
+export function getRoadNetworkPolygons(network: Readonly<RoadNetwork>) {
+    const cached = roadNetworkPolygonCache.get(network);
+
+    if (cached) {
+        return cached;
+    }
+
     const {getRoadEdge, obstacles} = createRoadSurface(network);
     const polygons = [
         ...network.roads.flatMap((road, roadIndex) => {
@@ -680,6 +916,18 @@ export function createRoadNetworkMesh(network: Readonly<RoadNetwork>) {
         }),
         ...obstacles.flatMap(getObstaclePolygons),
     ];
+
+    roadNetworkPolygonCache.set(network, polygons);
+
+    return polygons;
+}
+
+/**
+ * Every road in the network with its edge lines, curbs, and sidewalks, plus a start line on each
+ * looping road. Where roads meet, their surfaces merge without curbs or lines between them.
+ */
+export function createRoadNetworkMesh(network: Readonly<RoadNetwork>) {
+    const polygons = getRoadNetworkPolygons(network);
     const materials: Readonly<Record<RoadSurfaceLayer, Material3D>> = {
         [RoadSurfaceLayer.Asphalt]: new Material3D(asphaltMaterialOptions),
         [RoadSurfaceLayer.Paint]: new Material3D(paintMaterialOptions),

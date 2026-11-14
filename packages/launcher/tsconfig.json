@@ -15,6 +15,9 @@
     "extends": "../../configs/tsconfig.base.json",
     "references": [
         {
+            "path": "../antha-entities"
+        },
+        {
             "path": "../arcade-physics"
         },
         {

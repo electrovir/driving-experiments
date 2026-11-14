@@ -1,0 +1,1 @@
+-   remove the `@pixi/3d`, `pixi.js`, and `colord` `min-release-age-exclude` entries from `.npmrc` once `@pixi/3d@0.1.0`, `pixi.js@8.23.0`, and `colord@2.12.0` are 5 days old (2026-11-17)
